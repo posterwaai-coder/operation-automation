@@ -7,7 +7,8 @@ import urllib.request
 import script
 import zipfile
 from datetime import datetime
-from google.oauth2 import service_account
+from google.oauth2 import service_account, credentials as google_credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.errors import HttpError
@@ -35,24 +36,29 @@ import json
 
 
 def _get_drive_service():
-    """Build and return an authenticated Drive service."""
-    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    """Build and return an authenticated Drive service using OAuth user credentials."""
+    client_id     = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+    refresh_token = os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN")
 
-    if creds_json:
-        # Production — read from environment variable (Railway)
-        import google.oauth2.service_account as sa
-        creds_info = json.loads(creds_json)
-        credentials = sa.Credentials.from_service_account_info(
-            creds_info, scopes=SCOPES
+    if client_id and client_secret and refresh_token:
+        creds = google_credentials.Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=SCOPES,
         )
+        creds.refresh(Request())
     else:
-        # Local development — read from credentials.json file
-        creds_path = os.path.join(get_repo_root(), "credentials.json")
-        credentials = service_account.Credentials.from_service_account_file(
-            creds_path, scopes=SCOPES
+        # Local development fallback — run get_refresh_token.py once to populate .env
+        raise RuntimeError(
+            "OAuth credentials not found. Set GOOGLE_OAUTH_CLIENT_ID, "
+            "GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REFRESH_TOKEN."
         )
 
-    return build("drive", "v3", credentials=credentials)
+    return build("drive", "v3", credentials=creds)
 
 
 # ── Drive helpers ─────────────────────────────────────────────────────────────

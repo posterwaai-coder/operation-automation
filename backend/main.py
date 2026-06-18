@@ -334,7 +334,7 @@ def run_script(source_folder_id: str, recipient_email: str, cc_email: str,
 
         # ── Step 8: upload ZIP to Drive ───────────────────────────────────────
         log("Uploading ZIP to Google Drive…")
-        output_folder_id = "1eGk8Tuzl1fmOYR8ZUluwW07fBCi800r2"
+        output_folder_id = "1c28UVUhoxkpAjZyd9vsXoR5pXjaDlZZn"
         shared_link = upload_to_drive(zip_filepath, output_folder_id)
 
         # ── Step 9: send email ────────────────────────────────────────────────

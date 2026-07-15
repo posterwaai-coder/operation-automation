@@ -1,26 +1,61 @@
 [![Python application test with Github Actions](https://github.com/perceptronq/operation-automation/actions/workflows/actions.yml/badge.svg)](https://github.com/perceptronq/operation-automation/actions/workflows/actions.yml)
 
-Setting up google drive api and service account
+## Google Drive authentication
+
+The app authenticates to the Google Drive API with **either** a service account
+(recommended) **or** OAuth user credentials. It tries the service account first,
+then falls back to OAuth. Configure one of them.
+
+### Option A — Service account (recommended, never expires)
 
  a. Go to https://console.cloud.google.com/ <br>
  b. Create a new project <br>
  c. Enable the Google Drive API for your project <br>
- d. Create a service account. Give your service account a name and description. <br>
- e. Under Grant this service account access to project, select Project and choose the appropriate role. For Drive API access, you'll likely need at least the Storage Object Viewer role. <br>
- f. After creating the service account, you'll see a list of service accounts. Find the one you just created and click on its name. <br>
- g. Click the `Keys` tab <br>
- h. Click Add key and select JSON as the key type. <br>
- i. Click `Create`. This will download a JSON file containing your service account credentials. This file is your `credentials.json`. Store it in the same directory as that of cloned repo. <br>
- j. Share your Google Drive folder with the service account email. <br>
- k. Open the folder, find the folder id in the URL. Update the `folder_id` variable in main.py <br>
+ d. Create a service account and give it a name and description. <br>
+ e. Open the service account, go to the `Keys` tab, click Add key → JSON, and download it. <br>
+ f. Provide the key to the app in **one** of two ways: <br>
+ &nbsp;&nbsp;• set `GOOGLE_SERVICE_ACCOUNT_JSON` to the full JSON contents (best for Railway/Vercel secrets), **or** <br>
+ &nbsp;&nbsp;• save the file as `credentials.json` in the repo root. <br>
+ g. Share your Drive source folder (and the upload/output folder) with the service-account email. <br>
 
+> ⚠️ A service account has no Drive storage of its own. Reading shared folders
+> works everywhere, but **uploading** the result ZIP requires the output folder to
+> live in a **Shared Drive** (or use Option B for uploads). The Drive calls already
+> pass `supportsAllDrives=True`.
 
-create a .env file which must contain 2 parameters:
+### Option B — OAuth user credentials
+
+If you can't use a service account, generate an OAuth refresh token:
+
+ a. In Google Cloud Console create an OAuth 2.0 Client ID of type "Desktop app". <br>
+ b. Download its client-secrets JSON and save it as `oauth_client.json` in the repo root. <br>
+ c. **Publish the OAuth consent screen to "Production"** — otherwise Google expires the refresh token after 7 days, which produces the `invalid_grant: Bad Request` error. <br>
+ d. Run `python get_refresh_token.py` and authorize in the browser. <br>
+ e. Paste the printed `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REFRESH_TOKEN` into your `.env` / secrets. <br>
+
+> Seeing `invalid_grant: Bad Request`? The refresh token is expired or revoked —
+> re-run `python get_refresh_token.py` and update `GOOGLE_OAUTH_REFRESH_TOKEN`, or
+> switch to a service account.
+
+### .env file
+
+Create a `.env` file in the repo root. Include the Shopify/email settings plus the
+Drive credentials for whichever option you chose above:
+
 ```
+# Shopify / email
 TOKEN='shopify-app-api'
 MERCHANT='merchant-name'
 SENDER_EMAIL='sender-email-address'
-SENDER_PASSWORD='sender-email-password'
+RESEND_API_KEY='resend-api-key'
+
+# Google Drive — Option A (service account)
+GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
+
+# Google Drive — Option B (OAuth), instead of Option A
+GOOGLE_OAUTH_CLIENT_ID='...'
+GOOGLE_OAUTH_CLIENT_SECRET='...'
+GOOGLE_OAUTH_REFRESH_TOKEN='...'
 ```
 
 

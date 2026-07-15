@@ -9,6 +9,7 @@ import zipfile
 from datetime import datetime
 from google.oauth2 import service_account, credentials as google_credentials
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError, GoogleAuthError
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.errors import HttpError
@@ -35,28 +36,90 @@ SCOPES = [
 import json
 
 
-def _get_drive_service():
-    """Build and return an authenticated Drive service using OAuth user credentials."""
+# Actionable message shown to the user (via the UI) when Google rejects our
+# credentials — replaces the cryptic ``('invalid_grant: Bad Request', ...)`` tuple.
+_AUTH_HELP = (
+    "Google Drive authentication failed. The credentials are expired, revoked, "
+    "or don't match. To fix:\n"
+    "  • Service account (recommended, never expires): set GOOGLE_SERVICE_ACCOUNT_JSON "
+    "to the key JSON, or place credentials.json in the repo root, and share the Drive "
+    "folder(s) with the service-account email.\n"
+    "  • OAuth: regenerate the token with `python get_refresh_token.py` and update "
+    "GOOGLE_OAUTH_REFRESH_TOKEN. Publish the OAuth consent screen to Production so "
+    "tokens stop expiring after 7 days (the usual cause of invalid_grant)."
+)
+
+
+def _service_account_credentials():
+    """
+    Return service-account credentials from GOOGLE_SERVICE_ACCOUNT_JSON (inline
+    JSON, ideal for deployment secrets) or a credentials.json file at the repo
+    root — or None if neither is present.
+    """
+    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if sa_json:
+        try:
+            info = json.loads(sa_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "GOOGLE_SERVICE_ACCOUNT_JSON is set but is not valid JSON."
+            ) from exc
+        return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+
+    sa_path = os.path.join(get_repo_root(), "credentials.json")
+    if os.path.exists(sa_path):
+        return service_account.Credentials.from_service_account_file(sa_path, scopes=SCOPES)
+
+    return None
+
+
+def _oauth_credentials():
+    """Return OAuth user credentials from the GOOGLE_OAUTH_* env vars, or None."""
     client_id     = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
     client_secret = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
     refresh_token = os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN")
 
-    if client_id and client_secret and refresh_token:
-        creds = google_credentials.Credentials(
-            token=None,
-            refresh_token=refresh_token,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=client_id,
-            client_secret=client_secret,
-            scopes=SCOPES,
-        )
-        creds.refresh(Request())
-    else:
-        # Local development fallback — run get_refresh_token.py once to populate .env
+    if not (client_id and client_secret and refresh_token):
+        return None
+
+    return google_credentials.Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=client_id,
+        client_secret=client_secret,
+        scopes=SCOPES,
+    )
+
+
+def _get_drive_service():
+    """
+    Build and return an authenticated Drive service.
+
+    Auth is resolved in priority order:
+      1. Service account (GOOGLE_SERVICE_ACCOUNT_JSON or credentials.json) — preferred,
+         since service-account keys don't expire like OAuth refresh tokens do.
+      2. OAuth user credentials (GOOGLE_OAUTH_CLIENT_ID / _SECRET / _REFRESH_TOKEN).
+    """
+    creds = _service_account_credentials()
+    if creds is None:
+        creds = _oauth_credentials()
+
+    if creds is None:
         raise RuntimeError(
-            "OAuth credentials not found. Set GOOGLE_OAUTH_CLIENT_ID, "
-            "GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REFRESH_TOKEN."
+            "No Google Drive credentials configured. Set GOOGLE_SERVICE_ACCOUNT_JSON "
+            "(or add credentials.json), or set GOOGLE_OAUTH_CLIENT_ID, "
+            "GOOGLE_OAUTH_CLIENT_SECRET and GOOGLE_OAUTH_REFRESH_TOKEN."
         )
+
+    # OAuth credentials need an explicit refresh to obtain an access token; this is
+    # where a dead refresh token surfaces as invalid_grant. Service-account creds
+    # refresh lazily on first API call, so we let that error surface at call sites.
+    if not creds.valid:
+        try:
+            creds.refresh(Request())
+        except (RefreshError, GoogleAuthError) as exc:
+            raise RuntimeError(f"{_AUTH_HELP}\n\nUnderlying error: {exc}") from exc
 
     return build("drive", "v3", credentials=creds)
 
@@ -86,6 +149,8 @@ def _walk_drive_folder(service, folder_id: str, index: dict):
             spaces="drive",
             fields="nextPageToken, files(id, name, mimeType)",
             pageToken=page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
         ).execute()
 
         for item in response.get("files", []):
@@ -107,7 +172,7 @@ def _walk_drive_folder(service, folder_id: str, index: dict):
 def _download_file(service, file_id: str, dest_path: str):
     """Download a single Drive file to dest_path."""
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    request = service.files().get_media(fileId=file_id)
+    request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
     with open(dest_path, "wb") as f:
         downloader = MediaIoBaseDownload(f, request)
         done = False
@@ -147,10 +212,12 @@ def upload_to_drive(file_path, folder_id):
             body=file_metadata,
             media_body=media,
             fields="id,name,webViewLink",
+            supportsAllDrives=True,
         ).execute()
         service.permissions().create(
             fileId=file.get("id"),
             body={"type": "anyone", "role": "reader"},
+            supportsAllDrives=True,
         ).execute()
         print(f"Upload successful! Web View Link: {file.get('webViewLink')}")
         return file.get("webViewLink")

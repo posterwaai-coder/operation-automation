@@ -9,3 +9,7 @@ dist
 frontend/node_modules
 frontend/package-lock.json
 .idea
+.venv-offline
+env.md
+client_secret_*.json
+.DS_Store

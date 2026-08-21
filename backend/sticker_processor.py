@@ -116,6 +116,14 @@ class StickerProcessor:
         return sheets
 
     def add_bleeding(self, sticker_image: Image.Image) -> Image.Image:
+        # 0. Guarantee an alpha channel. A flat source — a .jpg preview, or
+        # artwork exported without transparency — has no mask to paste with and
+        # raised "bad transparency mask" below, taking the whole run down with
+        # it. Converting keeps it printable; it just bleeds to the rectangular
+        # edge instead of following a cut-out shape.
+        if sticker_image.mode != 'RGBA':
+            sticker_image = sticker_image.convert('RGBA')
+
         # 1. Add heavy padding to ensure the border doesn't hit the image edge
         # We use a larger padding here to accommodate the thick bleed
         padding = self.bleeding_pixels * 3

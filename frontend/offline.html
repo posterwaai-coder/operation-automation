@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Operation Automation — Offline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0b0c0f;
+    --surface:   #13151a;
+    --border:    #232530;
+    --accent:    #e8ff5a;
+    --accent2:   #5affca;
+    --muted:     #4a4f60;
+    --text:      #e4e6ef;
+    --text-dim:  #7a7f94;
+    --danger:    #ff5a6e;
+    --success:   #5affca;
+    --mono:      'DM Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --display:   'Syne', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --radius:    6px;
+    --transition: 220ms cubic-bezier(.4,0,.2,1);
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px 80px;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(232,255,90,.07) 0%, transparent 60%),
+      repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,.018) 39px, rgba(255,255,255,.018) 40px),
+      repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(255,255,255,.018) 39px, rgba(255,255,255,.018) 40px);
+  }
+
+  .shell { width: 100%; max-width: 680px; display: flex; flex-direction: column; }
+
+  /* ── Header ── */
+  header { padding: 0 0 36px; }
+  .tag {
+    font-size: 10px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .tag::before { content: ''; display: inline-block; width: 18px; height: 1px; background: var(--accent); }
+  h1 {
+    font-family: var(--display); font-size: clamp(28px, 5vw, 42px);
+    font-weight: 800; line-height: 1.05; letter-spacing: -.02em; color: #fff;
+  }
+  h1 span { color: var(--accent); }
+  .subtitle { margin-top: 8px; font-size: 12px; color: var(--text-dim); letter-spacing: .04em; line-height: 1.7; }
+
+  /* ── Card ── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 32px; position: relative; overflow: hidden;
+  }
+  .card::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(135deg, rgba(232,255,90,.025) 0%, transparent 50%);
+  }
+  .card > * { position: relative; }
+
+  .section-label {
+    font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 20px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  /* ── Fields ── */
+  .field-group { display: flex; flex-direction: column; gap: 18px; margin-bottom: 28px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  label { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim); }
+  input[type="text"] {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 10px 14px;
+    font-family: var(--mono); font-size: 13px; color: var(--text); outline: none;
+    transition: border-color var(--transition), box-shadow var(--transition);
+  }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(232,255,90,.12); }
+  input::placeholder { color: var(--muted); font-size: 12px; }
+  input:disabled { opacity: .4; cursor: not-allowed; }
+  input.invalid { border-color: rgba(255,90,110,.5); }
+
+  .path-note { font-size: 10px; color: var(--muted); margin-top: 2px; line-height: 1.6; }
+  .path-status { font-size: 10px; margin-top: 3px; min-height: 13px; line-height: 1.5; word-break: break-all; }
+  .path-status.ok  { color: var(--success); }
+  .path-status.bad { color: var(--danger); }
+
+  .divider { height: 1px; background: var(--border); margin: 24px 0; }
+
+  /* ── Run button ── */
+  .run-btn {
+    width: 100%; padding: 14px 24px; background: var(--accent); color: #0b0c0f;
+    border: none; border-radius: var(--radius);
+    font-family: var(--display); font-size: 15px; font-weight: 700; letter-spacing: .04em;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: transform var(--transition), box-shadow var(--transition), opacity var(--transition);
+  }
+  .run-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(232,255,90,.25); }
+  .run-btn:active:not(:disabled) { transform: translateY(0); }
+  .run-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .run-btn.running { background: var(--border); color: var(--text-dim); }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid currentColor; border-top-color: transparent;
+    border-radius: 50%; animation: spin .7s linear infinite;
+  }
+
+  /* ── Log ── */
+  .log-panel {
+    margin-top: 20px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px;
+    max-height: 300px; overflow-y: auto; display: none;
+    scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+  }
+  .log-panel.visible { display: block; }
+  .log-line { font-size: 12px; line-height: 1.7; color: var(--text-dim); padding: 1px 0; word-break: break-word; }
+  .log-line.success { color: var(--success); }
+  .log-line.error   { color: var(--danger); }
+
+  /* ── Banners ── */
+  .banner {
+    display: none; align-items: flex-start; gap: 10px;
+    padding: 12px 16px; border-radius: var(--radius);
+    font-size: 13px; margin-top: 16px; line-height: 1.6;
+  }
+  .banner.visible { display: flex; }
+  .banner.success { background: rgba(90,255,202,.08); border: 1px solid rgba(90,255,202,.2); color: var(--success); }
+  .banner.error   { background: rgba(255,90,110,.08); border: 1px solid rgba(255,90,110,.2); color: var(--danger); }
+  .banner .path { display: block; margin-top: 4px; font-size: 11px; opacity: .8; word-break: break-all; }
+
+  .open-btn {
+    display: none; width: 100%; margin-top: 12px; padding: 13px 24px;
+    background: var(--accent2); color: #0b0c0f; border: none; border-radius: var(--radius);
+    font-family: var(--display); font-weight: 700; font-size: 14px; letter-spacing: .03em;
+    cursor: pointer; transition: transform var(--transition), box-shadow var(--transition);
+  }
+  .open-btn.visible { display: block; }
+  .open-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(90,255,202,.25); }
+
+  .save-row { display: flex; justify-content: flex-end; margin-top: -8px; margin-bottom: 12px; }
+  .save-indicator {
+    font-size: 10px; color: var(--muted); letter-spacing: .08em;
+    opacity: 0; transition: opacity .4s;
+  }
+  .save-indicator.show { opacity: 1; }
+
+  footer { margin-top: 32px; text-align: center; font-size: 10px; color: var(--muted); letter-spacing: .1em; }
+
+  @media (max-width: 480px) {
+    .card { padding: 22px 18px; }
+    body { padding: 24px 14px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <header>
+    <div class="tag">Automation System · Offline</div>
+    <h1>Operation <span>Automation</span></h1>
+    <p class="subtitle">
+      Pulls unfulfilled orders from Shopify, matches each SKU against a folder on this
+      machine, and writes the sorted result to a folder you choose. No Google Drive, no ZIP.
+    </p>
+  </header>
+
+  <div class="card">
+
+    <!-- Source -->
+    <div class="section-label">Local Artwork Source</div>
+    <div class="field-group">
+      <div class="field">
+        <label for="source_folder">Artwork Folder</label>
+        <input type="text" id="source_folder" placeholder="/Users/you/Artwork/all_in_one" autocomplete="off" spellcheck="false" />
+        <span class="path-note">
+          Absolute path to the folder holding every artwork file. Subfolders are searched too,
+          so the existing category/product structure works as-is.
+        </span>
+        <span class="path-status" id="source_folder_status"></span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- Output -->
+    <div class="section-label">Output</div>
+    <div class="field-group">
+      <div class="field">
+        <label for="output_folder">Destination Folder</label>
+        <input type="text" id="output_folder" placeholder="/Users/you/Desktop/Orders" autocomplete="off" spellcheck="false" />
+        <span class="path-note">
+          Each run creates a dated folder inside this one, e.g. <code>21082026onlineorder</code>,
+          holding A3 / A4 / A5 / PP / stickers and <code>not_found.csv</code>.
+          A second run on the same day gets a <code>_2</code> suffix instead of overwriting the first.
+        </span>
+        <span class="path-status" id="output_folder_status"></span>
+      </div>
+    </div>
+
+    <div class="save-row">
+      <span class="save-indicator" id="save-indicator">✓ Settings saved</span>
+    </div>
+
+    <button class="run-btn" id="run-btn" onclick="handleRun()">Run Fulfillment Pipeline</button>
+
+    <div class="log-panel" id="log-panel"></div>
+
+    <div class="banner success" id="banner-success">
+      <span>✓</span>
+      <span>
+        <span id="banner-success-msg">Pipeline completed.</span>
+        <span class="path" id="banner-success-path"></span>
+      </span>
+    </div>
+    <button class="open-btn" id="open-btn" onclick="openOutput()">Open Output Folder</button>
+
+    <div class="banner error" id="banner-error">
+      <span>✕</span>
+      <span id="banner-error-msg">An error occurred. See the log above.</span>
+    </div>
+
+  </div>
+
+  <footer>OPERATION AUTOMATION · OFFLINE · INTERNAL TOOL</footer>
+</div>
+
+<script>
+// ── Config ───────────────────────────────────────────────────────────────────
+const API = '/api';
+const FIELDS = ['source_folder', 'output_folder'];
+
+const $ = (id) => document.getElementById(id);
+
+let pollTimer  = null;
+let saveTimer  = null;
+let checkTimers = {};
+let isRunning  = false;
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const cfg = await (await fetch(`${API}/settings`)).json();
+    FIELDS.forEach((f) => {
+      $(f).value = cfg[f] ?? '';
+      if ($(f).value) checkPath(f);
+    });
+  } catch (_) {}
+}
+
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    const body = {};
+    FIELDS.forEach((f) => (body[f] = $(f).value.trim()));
+    try {
+      await fetch(`${API}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const ind = $('save-indicator');
+      ind.classList.add('show');
+      setTimeout(() => ind.classList.remove('show'), 1800);
+    } catch (_) {}
+  }, 900);
+}
+
+// ── Live path validation ─────────────────────────────────────────────────────
+async function checkPath(field) {
+  const value  = $(field).value.trim();
+  const status = $(`${field}_status`);
+  const input  = $(field);
+
+  if (!value) {
+    status.textContent = '';
+    status.className = 'path-status';
+    input.classList.remove('invalid');
+    return;
+  }
+
+  const kind = field === 'output_folder' ? 'output' : 'source';
+  try {
+    const r = await fetch(`${API}/check-path?kind=${kind}&path=${encodeURIComponent(value)}`);
+    const d = await r.json();
+    status.textContent = d.message || '';
+    status.className = 'path-status ' + (d.ok ? 'ok' : 'bad');
+    input.classList.toggle('invalid', !d.ok);
+  } catch (_) {
+    status.textContent = '';
+    status.className = 'path-status';
+  }
+}
+
+FIELDS.forEach((f) => {
+  $(f).addEventListener('input', () => {
+    scheduleSave();
+    clearTimeout(checkTimers[f]);
+    checkTimers[f] = setTimeout(() => checkPath(f), 400);
+  });
+});
+
+// ── Log rendering ────────────────────────────────────────────────────────────
+function renderLog(lines) {
+  const panel = $('log-panel');
+  panel.classList.add('visible');
+  panel.innerHTML = lines
+    .map((line) => {
+      const cls = line.startsWith('✅') || line.startsWith('✓') ? ' success'
+                : line.startsWith('❌') || line.startsWith('⚠') ? ' error'
+                : '';
+      const safe = line.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      return `<div class="log-line${cls}">${safe}</div>`;
+    })
+    .join('');
+  panel.scrollTop = panel.scrollHeight;
+}
+
+// ── UI state ─────────────────────────────────────────────────────────────────
+function setRunning(running) {
+  isRunning = running;
+  const btn = $('run-btn');
+  btn.disabled = running;
+  btn.classList.toggle('running', running);
+  btn.innerHTML = running
+    ? '<span class="spinner"></span> Running…'
+    : 'Run Fulfillment Pipeline';
+  FIELDS.forEach((f) => ($(f).disabled = running));
+}
+
+function hideResults() {
+  $('banner-success').classList.remove('visible');
+  $('banner-error').classList.remove('visible');
+  $('open-btn').classList.remove('visible');
+}
+
+function showSuccess(path) {
+  $('banner-success-msg').textContent = 'Pipeline completed. Output written to:';
+  $('banner-success-path').textContent = path || '';
+  $('banner-success').classList.add('visible');
+  if (path) $('open-btn').classList.add('visible');
+}
+
+function showError(msg) {
+  $('banner-error-msg').textContent = msg || 'An error occurred. See the log above.';
+  $('banner-error').classList.add('visible');
+}
+
+// ── Run ──────────────────────────────────────────────────────────────────────
+async function handleRun() {
+  if (isRunning) return;
+
+  const body = {};
+  for (const f of FIELDS) {
+    body[f] = $(f).value.trim();
+    if (!body[f]) {
+      showError(f === 'source_folder'
+        ? 'Please enter the local artwork folder.'
+        : 'Please enter the destination folder.');
+      $(f).focus();
+      return;
+    }
+  }
+
+  hideResults();
+  setRunning(true);
+  renderLog(['Starting…']);
+
+  try {
+    await fetch(`${API}/reset`, { method: 'POST' });
+    const r = await fetch(`${API}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      setRunning(false);
+      showError(data.error ?? 'Server error');
+      return;
+    }
+    startPolling();
+  } catch (_) {
+    setRunning(false);
+    showError('Cannot reach the backend. Is offline_api.py running?');
+  }
+}
+
+function startPolling() {
+  let seen = 0;
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
+    try {
+      const s = await (await fetch(`${API}/status`)).json();
+      if (s.log.length !== seen) { renderLog(s.log); seen = s.log.length; }
+      if (!s.running) {
+        clearInterval(pollTimer);
+        setRunning(false);
+        if (s.error)     showError(s.error);
+        else if (s.done) showSuccess(s.output_path);
+      }
+    } catch (_) {}
+  }, 800);
+}
+
+async function openOutput() {
+  try {
+    const r = await fetch(`${API}/open-output`, { method: 'POST' });
+    if (!r.ok) {
+      const d = await r.json();
+      showError(d.error ?? 'Could not open the output folder.');
+    }
+  } catch (_) {
+    showError('Could not open the output folder.');
+  }
+}
+
+loadSettings();
+</script>
+
+</body>
+</html>

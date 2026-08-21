@@ -1,0 +1,11 @@
+# Dependencies for the OFFLINE build (offline_api.py / offline_main.py).
+# Drops google-api-python-client, google-auth*, resend and flask-cors — the
+# offline pipeline talks to Shopify and the local filesystem, nothing else.
+
+Flask
+python-dotenv
+ShopifyAPI
+requests
+pillow
+numpy
+opencv-python-headless

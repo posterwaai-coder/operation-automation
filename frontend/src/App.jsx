@@ -44,6 +44,11 @@ function usePipeline() {
   const [status, setStatus]     = useState("idle");
   const [log, setLog]           = useState([]);
   const [errorMsg, setErrorMsg] = useState("");
+  // Tracked separately from status on purpose: the backend arms the download
+  // as soon as the archive exists, so it can be ready while the run is still
+  // going and it stays ready when the run ends in an error.
+  const [zipReady, setZipReady] = useState(false);
+  const [zipName, setZipName]   = useState("");
   const pollRef = useRef(null);
 
   const stopPolling = () => clearInterval(pollRef.current);
@@ -55,6 +60,8 @@ function usePipeline() {
         const r = await fetch(`${API}/status`);
         const s = await r.json();
         if (s.log.length > seen) { setLog([...s.log]); seen = s.log.length; }
+        setZipReady(!!s.zip_ready);
+        setZipName(s.zip_name ?? "");
         if (!s.running) {
           stopPolling();
           if (s.error)     { setErrorMsg(s.error); setStatus("error"); }
@@ -66,6 +73,7 @@ function usePipeline() {
 
   const run = useCallback(async (form) => {
     setStatus("running"); setLog([]); setErrorMsg("");
+    setZipReady(false); setZipName("");
     try {
       await fetch(`${API}/reset`, { method: "POST" });
       const r = await fetch(`${API}/run`, {
@@ -83,7 +91,7 @@ function usePipeline() {
   }, [startPolling]);
 
   useEffect(() => () => stopPolling(), []);
-  return { status, log, errorMsg, run };
+  return { status, log, errorMsg, zipReady, zipName, run };
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
@@ -148,7 +156,7 @@ export default function App() {
   useSettings(setFormCb);
 
   const saved = useAutoSave(form);
-  const { status, log, errorMsg, run } = usePipeline();
+  const { status, log, errorMsg, zipReady, zipName, run } = usePipeline();
   const isRunning = status === "running";
 
   const handleChange = (id, val) => setForm((prev) => ({ ...prev, [id]: val }));
@@ -232,17 +240,26 @@ export default function App() {
           {/* Log */}
           <LogPanel lines={log} />
 
-          {/* Banners + download */}
+          {/* Banners */}
           {status === "done" && (
-            <>
-              <Banner type="success" message="Pipeline completed. Email notification sent." />
-              <a href={`${API}/download`} style={s.downloadBtn} download>
-                ⬇ Download Processed ZIP
-              </a>
-            </>
+            <Banner type="success" message="Pipeline completed. Check the log for any warnings." />
           )}
           {status === "error" && (
             <Banner type="error" message={errorMsg || "An error occurred. Check the log."} />
+          )}
+          {status === "error" && zipReady && (
+            <Banner
+              type="success"
+              message="The run failed, but the artwork collected before the failure was saved. Download it below."
+            />
+          )}
+
+          {/* Download — rendered whenever an archive exists, including after a
+              failed run or while the run is still finishing up. */}
+          {zipReady && (
+            <a href={`${API}/download`} style={s.downloadBtn} download>
+              ⬇ Download {zipName || "Processed ZIP"}
+            </a>
           )}
 
         </div>

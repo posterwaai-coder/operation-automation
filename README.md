@@ -43,11 +43,15 @@ Create a `.env` file in the repo root. Include the Shopify/email settings plus t
 Drive credentials for whichever option you chose above:
 
 ```
-# Shopify / email
+# Shopify
 TOKEN='shopify-app-api'
 MERCHANT='merchant-name'
-SENDER_EMAIL='sender-email-address'
-RESEND_API_KEY='resend-api-key'
+
+# Email — Gmail SMTP
+SENDER_EMAIL='ops@yourdomain.com'
+SENDER_PASSWORD='abcd efgh ijkl mnop'   # Google APP password, not the mailbox password
+# SMTP_HOST='smtp.gmail.com'            # optional override
+# SMTP_PORT='587'                       # optional; 465 switches to implicit SSL
 
 # Google Drive — Option A (service account)
 GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
@@ -92,6 +96,53 @@ datas=[
 
 Build executable
 `pyinstaller main.py --name Automate --onefile --windowed --add-data "credentials.json:." --add-data ".env:."`
+
+---
+
+## Email (Gmail SMTP)
+
+Notifications go out over Gmail's SMTP server. Resend has been removed — there
+is no API key to manage and no third party in the path.
+
+`SENDER_PASSWORD` must be a **Google app password**, not the mailbox password:
+Google stopped accepting account passwords for SMTP in May 2022, so the normal
+password will always fail with `535 Username and Password not accepted`.
+
+ a. Switch on 2-Step Verification for the sending account. <br>
+ b. Go to <https://myaccount.google.com/apppasswords> and generate one. <br>
+ c. Paste the 16 characters into `SENDER_PASSWORD`. The spaces Google shows are
+    cosmetic — they're stripped automatically, so either form works. <br>
+
+`SMTP_HOST` and `SMTP_PORT` can point this at another provider. Port 465 uses
+implicit SSL; anything else uses STARTTLS.
+
+## Failsafe: the ZIP survives a failed run
+
+The pipeline used to delete its temp directory whenever anything went wrong, so
+a failure in the last two steps — a Drive quota error, a rejected SMTP login —
+threw away artwork that had already been fetched successfully.
+
+Now the archive is built as early as it can be and handed to the API the moment
+it exists, before the upload and email are attempted:
+
+| What failed | Run outcome | Download button |
+|---|---|---|
+| Nothing | success | ✅ `…onlineorder.zip` |
+| Email | success, with warning | ✅ `…onlineorder.zip` |
+| Drive upload | success, with warning | ✅ `…onlineorder.zip` |
+| Both | success, with warnings | ✅ `…onlineorder.zip` |
+| Crash while gathering artwork | **error** | ✅ `…onlineorder_PARTIAL.zip` |
+| Crash before anything was fetched | **error** | — nothing to offer |
+
+Upload and email are best-effort: neither can fail the run any more. A crash
+during the gathering phase still surfaces as an error, but only after whatever
+was collected has been zipped — that archive is suffixed `_PARTIAL` so a
+half-complete batch can't be mistaken for a finished one.
+
+The download button in the UI is driven by `zip_ready`, which is independent of
+the error state, so it appears on failed runs too. The archive is no longer
+deleted after being served — a cancelled download or a second copy is fine. It
+is cleared on the next run.
 
 ---
 

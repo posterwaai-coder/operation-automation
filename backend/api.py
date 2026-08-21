@@ -85,13 +85,18 @@ def post_settings():
 
 @app.get("/api/status")
 def get_status():
-    # Don't expose internal filesystem paths to the frontend
+    # Don't expose internal filesystem paths to the frontend — just whether a
+    # download is available. zip_ready is deliberately independent of `error`:
+    # a run that failed partway can still have a salvaged archive waiting.
+    zip_path = _run_state.get("zip_path")
+    ready = bool(zip_path) and os.path.exists(zip_path)
     return jsonify({
-        "running":  _run_state["running"],
-        "log":      _run_state["log"],
-        "error":    _run_state["error"],
-        "done":     _run_state["done"],
-        "zip_ready": bool(_run_state.get("zip_path")),
+        "running":   _run_state["running"],
+        "log":       _run_state["log"],
+        "error":     _run_state["error"],
+        "done":      _run_state["done"],
+        "zip_ready": ready,
+        "zip_name":  os.path.basename(zip_path) if ready else None,
     })
 
 
@@ -123,6 +128,17 @@ def post_run():
         "done": False, "zip_path": None, "tmp_dir": None,
     })
 
+    def _record_zip(path: str):
+        """
+        Arm the download as soon as the archive exists.
+
+        run_script calls this before the upload and email steps, and calls it
+        even when the gathering phase failed, so the button works for a partial
+        harvest and for a run that later dies on Drive or SMTP.
+        """
+        _run_state["zip_path"] = path
+        _run_state["tmp_dir"]  = os.path.dirname(path)
+
     def worker():
         try:
             from main import run_script
@@ -131,12 +147,16 @@ def post_run():
                 recipient_email=recipient_email,
                 cc_email=cc_email,
                 log=_append_log,
+                on_zip_ready=_record_zip,
             )
-            _run_state["zip_path"] = zip_path
-            _run_state["tmp_dir"]  = os.path.dirname(zip_path)
+            if zip_path:
+                _record_zip(zip_path)
         except Exception as exc:
             _run_state["error"] = str(exc)
             _append_log(f"❌ Error: {exc}")
+            # Deliberately no cleanup here: if _record_zip already fired, the
+            # archive stays on disk and downloadable. /api/reset clears it
+            # before the next run.
         finally:
             _run_state["running"] = False
             _run_state["done"]    = True
@@ -147,28 +167,20 @@ def post_run():
 
 @app.get("/api/download")
 def download():
-    """Serve the ZIP to the browser, then clean up the temp directory."""
+    """Serve the ZIP to the browser. Available whenever an archive exists."""
     zip_path = _run_state.get("zip_path")
     if not zip_path or not os.path.exists(zip_path):
         return jsonify({"error": "No file ready for download"}), 404
 
-    tmp_dir = _run_state.get("tmp_dir")
-
-    def cleanup():
-        if tmp_dir and os.path.exists(tmp_dir):
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            _run_state["zip_path"] = None
-            _run_state["tmp_dir"]  = None
-
-    response = send_file(
+    # The archive is intentionally NOT deleted after streaming. A download can
+    # fail or be cancelled, and after a broken run this file may be the only
+    # copy of the artwork — so it stays until /api/reset or the next run.
+    return send_file(
         zip_path,
         as_attachment=True,
         download_name=os.path.basename(zip_path),
         mimetype="application/zip",
     )
-    # Clean up after Flask finishes streaming the file
-    response.call_on_close(cleanup)
-    return response
 
 
 @app.post("/api/reset")

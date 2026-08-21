@@ -1,8 +1,10 @@
 import os
 import shutil
 import csv
+import smtplib
 import tempfile
 import urllib.request
+from email.message import EmailMessage
 
 import script
 import zipfile
@@ -246,28 +248,74 @@ def upload_to_drive(file_path, folder_id):
         raise
 
 
-def send_email(shared_link, recipient_email, cc_email=None):
-    import resend
+# How long to wait on the SMTP conversation before giving up.
+SMTP_TIMEOUT = 30
 
-    resend.api_key = os.getenv("RESEND_API_KEY")
-    sender_email   = os.getenv("SENDER_EMAIL")
+_SMTP_AUTH_HELP = (
+    "Gmail rejected the login. SENDER_PASSWORD has to be a 16-character Google "
+    "app password — generate one at https://myaccount.google.com/apppasswords "
+    "with 2-Step Verification switched on. Google stopped accepting plain "
+    "account passwords for SMTP in May 2022, so the normal mailbox password "
+    "will always fail here."
+)
 
-    params = {
-        "from":    sender_email,
-        "to":      [recipient_email],
-        "subject": "Shared Google Drive Link",
-        "html":    f"<p>Here is the shared link to the uploaded file: "
-                   f"<a href='{shared_link}'>{shared_link}</a></p>",
-    }
+
+def send_email(shared_link, recipient_email, cc_email=None, log=print):
+    """
+    Send the notification through Gmail's SMTP server.
+
+    Reads SENDER_EMAIL and SENDER_PASSWORD (a Google app password). SMTP_HOST
+    and SMTP_PORT can point this at a different provider; port 465 switches to
+    implicit SSL, anything else uses STARTTLS.
+    """
+    sender_email = os.getenv("SENDER_EMAIL")
+    # App passwords are shown in groups of four — the spaces are cosmetic and
+    # get pasted into .env more often than not.
+    password = (os.getenv("SENDER_PASSWORD") or "").replace(" ", "")
+    host = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    port = int(os.getenv("SMTP_PORT", "587"))
+
+    if not sender_email or not password:
+        raise RuntimeError(
+            "Email is not configured. Set SENDER_EMAIL and SENDER_PASSWORD "
+            "(a Google app password) in .env."
+        )
+
+    message = EmailMessage()
+    message["From"] = sender_email
+    message["To"] = recipient_email
     if cc_email:
-        params["cc"] = [cc_email]
+        message["Cc"] = cc_email
+    message["Subject"] = "Shared Google Drive Link"
+    message.set_content(
+        f"Here is the shared link to the uploaded file:\n\n{shared_link}\n"
+    )
+    message.add_alternative(
+        f"<p>Here is the shared link to the uploaded file: "
+        f"<a href='{shared_link}'>{shared_link}</a></p>",
+        subtype="html",
+    )
+
+    recipients = [recipient_email] + ([cc_email] if cc_email else [])
 
     try:
-        response = resend.Emails.send(params)
-        print(f"Email sent successfully. ID: {response['id']}")
-    except Exception as e:
-        print(f"Error: Unable to send email - {e}")
-        raise
+        if port == 465:
+            server = smtplib.SMTP_SSL(host, port, timeout=SMTP_TIMEOUT)
+        else:
+            server = smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT)
+
+        with server:
+            if port != 465:
+                server.starttls()
+            server.login(sender_email, password)
+            server.send_message(message, to_addrs=recipients)
+
+    except smtplib.SMTPAuthenticationError as exc:
+        raise RuntimeError(f"{_SMTP_AUTH_HELP}\n\nServer said: {exc}") from exc
+    except (smtplib.SMTPException, OSError) as exc:
+        raise RuntimeError(f"Could not send mail via {host}:{port} — {exc}") from exc
+
+    log(f"  Email sent to {', '.join(recipients)}.")
 
 
 def process_sticker_folders(input_dir: Path, output_dir: Path) -> None:
@@ -290,7 +338,7 @@ def process_sticker_folders(input_dir: Path, output_dir: Path) -> None:
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def run_script(source_folder_id: str, recipient_email: str, cc_email: str,
-               log=print) -> str:
+               log=print, on_zip_ready=None) -> str:
     """
     Run the full fulfilment pipeline.
 
@@ -301,15 +349,32 @@ def run_script(source_folder_id: str, recipient_email: str, cc_email: str,
     cc_email         : Optional CC email.
     log              : Callable used for progress messages (default: print).
                        api.py passes _append_log so messages appear in the UI.
+    on_zip_ready     : Optional callback invoked with the ZIP path as soon as
+                       the archive exists, before the upload and email steps.
+                       api.py uses it to arm the download button early, so the
+                       artwork stays reachable even if a later step fails or
+                       the run dies outright.
 
     Returns
     -------
     str : Local path to the generated ZIP file (inside the temp directory).
+
+    Raises
+    ------
+    Exception : re-raised from the gathering phase, but only after the partial
+                harvest has been zipped and handed to on_zip_ready.
     """
     # Create a self-cleaning temp workspace for this run
     tmp_dir     = tempfile.mkdtemp(prefix="operation_automation_")
     destination = os.path.join(tmp_dir, "output")
     os.makedirs(destination)
+
+    # Anything raised while gathering artwork is held here rather than thrown
+    # straight out: whatever made it to disk still gets zipped and handed over
+    # first, so a failure halfway through a 200-order run doesn't cost the
+    # operator the 150 files that did come down.
+    gather_error = None
+    warnings = []
 
     try:
         # ── Step 1: fetch unfulfilled orders ─────────────────────────────────
@@ -423,29 +488,75 @@ def run_script(source_folder_id: str, recipient_email: str, cc_email: str,
         # ── Step 6: clean up empty folders ───────────────────────────────────
         remove_empty_folders(destination)
 
-        # ── Step 7: zip ───────────────────────────────────────────────────────
-        log("Creating ZIP archive…")
-        date_str     = datetime.now().strftime("%d%m%Y")
-        zip_filename = f"{date_str}onlineorder.zip"
-        zip_filepath = os.path.join(tmp_dir, zip_filename)
-        zip_folder(destination, zip_filepath)
+    except Exception as exc:            # noqa: BLE001 — deliberately broad
+        gather_error = exc
+        log(f"❌ Error while gathering artwork: {exc}")
+        log("Packaging whatever was collected before the failure…")
 
-        # ── Step 8: upload ZIP to Drive ───────────────────────────────────────
-        log("Uploading ZIP to Google Drive…")
-        output_folder_id = "1c28UVUhoxkpAjZyd9vsXoR5pXjaDlZZn"
-        shared_link = upload_to_drive(zip_filepath, output_folder_id)
+    # ── Step 7: zip (always attempted, even after a failed harvest) ───────────
+    zip_filepath = None
+    has_content = os.path.isdir(destination) and bool(os.listdir(destination))
 
-        # ── Step 9: send email ────────────────────────────────────────────────
-        log("Sending email notification…")
-        send_email(shared_link, recipient_email, cc_email)
+    if has_content:
+        try:
+            log("Creating ZIP archive…")
+            date_str     = datetime.now().strftime("%d%m%Y")
+            suffix       = "_PARTIAL" if gather_error else ""
+            zip_filename = f"{date_str}onlineorder{suffix}.zip"
+            zip_filepath = os.path.join(tmp_dir, zip_filename)
+            zip_folder(destination, zip_filepath)
 
+            # Hand the path over immediately. From here on the download button
+            # works no matter what else goes wrong.
+            if on_zip_ready:
+                on_zip_ready(zip_filepath)
+            log(f"ZIP ready: {zip_filename}")
+        except Exception as exc:        # noqa: BLE001
+            zip_filepath = None
+            log(f"❌ Could not create the ZIP archive: {exc}")
+    else:
+        log("Nothing was collected, so there is no ZIP to create.")
+
+    # A failed harvest stops here — but with the partial ZIP already published.
+    if gather_error:
+        if zip_filepath:
+            log("⚠ Run failed, but the partial ZIP is available to download.")
+        else:
+            # Nothing salvageable — don't leave an empty temp dir behind.
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise gather_error
+
+    # ── Step 8: upload ZIP to Drive (best effort) ─────────────────────────────
+    shared_link = None
+    if zip_filepath:
+        try:
+            log("Uploading ZIP to Google Drive…")
+            output_folder_id = "1c28UVUhoxkpAjZyd9vsXoR5pXjaDlZZn"
+            shared_link = upload_to_drive(zip_filepath, output_folder_id)
+        except Exception as exc:        # noqa: BLE001
+            warnings.append(f"Drive upload failed: {exc}")
+            log(f"⚠ Drive upload failed: {exc}")
+            log("  The ZIP is still available from the download button below.")
+    else:
+        warnings.append("Upload skipped — there was no ZIP to upload.")
+        log("⚠ Upload skipped — there was no ZIP to upload.")
+
+    # ── Step 9: send email (best effort, needs the link) ──────────────────────
+    if shared_link:
+        try:
+            log("Sending email notification…")
+            send_email(shared_link, recipient_email, cc_email, log=log)
+        except Exception as exc:        # noqa: BLE001
+            warnings.append(f"Email failed: {exc}")
+            log(f"⚠ Email failed: {exc}")
+            log("  The ZIP is still available from the download button below.")
+    else:
+        warnings.append("Email skipped — there was no Drive link to send.")
+        log("⚠ Email skipped — the upload produced no link to send.")
+
+    if warnings:
+        log("✅  Finished with warnings — the ZIP is ready to download.")
+    else:
         log("✅  All done!")
-        return zip_filepath
 
-    except Exception:
-        # Clean up temp dir on failure so Railway disk doesn't fill up
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
-    # Note: on success we intentionally do NOT delete tmp_dir here —
-    # api.py keeps zip_filepath in _run_state so /api/download can serve it.
-    # api.py is responsible for cleanup after the download.
+    return zip_filepath

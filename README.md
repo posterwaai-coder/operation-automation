@@ -99,22 +99,59 @@ Build executable
 
 ---
 
-## Email (Gmail SMTP)
+## Email
 
-Notifications go out over Gmail's SMTP server. Resend has been removed — there
-is no API key to manage and no third party in the path.
+### Why the server can't send mail
 
-`SENDER_PASSWORD` must be a **Google app password**, not the mailbox password:
-Google stopped accepting account passwords for SMTP in May 2022, so the normal
-password will always fail with `535 Username and Password not accepted`.
+Railway blocks outbound SMTP — ports 25, 465 and 587 are null-routed to stop
+spam abuse. A send from the deployed backend fails with
+`[Errno 101] Network is unreachable` no matter how the credentials are set up,
+because the connection never leaves the container. This is almost certainly why
+the project used an HTTP email API originally.
 
- a. Switch on 2-Step Verification for the sending account. <br>
- b. Go to <https://myaccount.google.com/apppasswords> and generate one. <br>
- c. Paste the 16 characters into `SENDER_PASSWORD`. The spaces Google shows are
-    cosmetic — they're stripped automatically, so either form works. <br>
+The SMTP code in `main.py` is still there and works fine anywhere that permits
+port 587 (a laptop, a VPS, most office networks). It is simply unreachable from
+Railway. It needs `SENDER_EMAIL` and `SENDER_PASSWORD`, where the password must
+be a **Google app password** from <https://myaccount.google.com/apppasswords>
+with 2-Step Verification on — Google stopped accepting mailbox passwords for
+SMTP in May 2022. `SMTP_HOST` / `SMTP_PORT` can point it elsewhere; 465 uses
+implicit SSL, anything else STARTTLS.
 
-`SMTP_HOST` and `SMTP_PORT` can point this at another provider. Port 465 uses
-implicit SSL; anything else uses STARTTLS.
+An email failure never fails a run — see the failsafe table below.
+
+### Sending from the offline build instead
+
+The offline build sidesteps the block entirely by keeping a human in the loop:
+it writes the folder locally, zips it, and opens a pre-written Gmail draft in
+the browser.
+
+Fill in **Recipient** (and optionally **CC**) before running. That, and only
+that, turns on two extra things:
+
+ a. a `.zip` of the run folder, written next to it — a mail draft can only
+    carry a file, not a directory <br>
+ b. a **Compose Email in Gmail** button once the run finishes <br>
+
+Leave Recipient empty and the run behaves exactly as before: folder only, no
+ZIP, no email step.
+
+Pressing the button does three things at once:
+
+ a. opens Gmail compose with recipient, CC, subject and body already written <br>
+ b. reveals the `.zip` in Finder/Explorer with the file already selected <br>
+ c. copies the `.zip`'s full path to the clipboard as a backup <br>
+
+**You still drag the file into the compose window yourself.** That step cannot
+be automated: a web page has no way to be handed a local file except by the
+person using it, which is a browser sandbox rule rather than a missing feature.
+`mailto:` links can't carry attachments either — RFC 6068 forbids the `attach`
+header and every modern client ignores it, because it was abused to deliver
+malware. Driving a desktop client (Apple Mail via AppleScript, Outlook via COM)
+*can* attach for real; that is a different option if the browser step ever
+becomes annoying.
+
+If the ZIP is over Gmail's 25 MB attachment limit, the button says so — Gmail
+will offer to upload it to Drive and send a link instead.
 
 ## Failsafe: the ZIP survives a failed run
 

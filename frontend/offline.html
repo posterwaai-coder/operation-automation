@@ -151,6 +151,25 @@
   .open-btn.visible { display: block; }
   .open-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(90,255,202,.25); }
 
+  .mail-btn {
+    display: none; width: 100%; margin-top: 10px; padding: 13px 24px;
+    background: transparent; color: var(--accent); border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    font-family: var(--display); font-weight: 700; font-size: 14px; letter-spacing: .03em;
+    cursor: pointer; transition: background var(--transition), color var(--transition);
+  }
+  .mail-btn.visible { display: block; }
+  .mail-btn:hover { background: var(--accent); color: #0b0c0f; }
+
+  .mail-hint {
+    display: none; margin-top: 10px; padding: 12px 14px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    font-size: 11px; line-height: 1.75; color: var(--text-dim);
+  }
+  .mail-hint.visible { display: block; }
+  .mail-hint b { color: var(--text); font-weight: 500; }
+  .mail-hint .warn { color: var(--danger); }
+
   .save-row { display: flex; justify-content: flex-end; margin-top: -8px; margin-bottom: 12px; }
   .save-indicator {
     font-size: 10px; color: var(--muted); letter-spacing: .08em;
@@ -211,6 +230,26 @@
       </div>
     </div>
 
+    <div class="divider"></div>
+
+    <!-- Email -->
+    <div class="section-label">Email <span style="text-transform:none;letter-spacing:0;color:var(--muted)">(optional)</span></div>
+    <div class="field-group">
+      <div class="field">
+        <label for="recipient_email">Recipient</label>
+        <input type="text" id="recipient_email" placeholder="team@posterwa.com" autocomplete="off" spellcheck="false" />
+        <span class="path-note">
+          Fill this in and the run also produces a <code>.zip</code> next to the output folder,
+          plus a button that opens a pre-written Gmail draft. Leave it empty and nothing changes —
+          no ZIP, no email step.
+        </span>
+      </div>
+      <div class="field">
+        <label for="cc_email">CC</label>
+        <input type="text" id="cc_email" placeholder="manager@posterwa.com" autocomplete="off" spellcheck="false" />
+      </div>
+    </div>
+
     <div class="save-row">
       <span class="save-indicator" id="save-indicator">✓ Settings saved</span>
     </div>
@@ -227,6 +266,8 @@
       </span>
     </div>
     <button class="open-btn" id="open-btn" onclick="openOutput()">Open Output Folder</button>
+    <button class="mail-btn" id="mail-btn" onclick="composeEmail()">Compose Email in Gmail</button>
+    <div class="mail-hint" id="mail-hint"></div>
 
     <div class="banner error" id="banner-error">
       <span>✕</span>
@@ -241,7 +282,9 @@
 <script>
 // ── Config ───────────────────────────────────────────────────────────────────
 const API = '/api';
-const FIELDS = ['source_folder', 'output_folder'];
+const PATH_FIELDS  = ['source_folder', 'output_folder'];
+const EMAIL_FIELDS = ['recipient_email', 'cc_email'];
+const FIELDS       = [...PATH_FIELDS, ...EMAIL_FIELDS];
 
 const $ = (id) => document.getElementById(id);
 
@@ -249,15 +292,14 @@ let pollTimer  = null;
 let saveTimer  = null;
 let checkTimers = {};
 let isRunning  = false;
+let zipReady   = false;
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 async function loadSettings() {
   try {
     const cfg = await (await fetch(`${API}/settings`)).json();
-    FIELDS.forEach((f) => {
-      $(f).value = cfg[f] ?? '';
-      if ($(f).value) checkPath(f);
-    });
+    FIELDS.forEach((f) => { $(f).value = cfg[f] ?? ''; });
+    PATH_FIELDS.forEach((f) => { if ($(f).value) checkPath(f); });
   } catch (_) {}
 }
 
@@ -308,6 +350,7 @@ async function checkPath(field) {
 FIELDS.forEach((f) => {
   $(f).addEventListener('input', () => {
     scheduleSave();
+    if (!PATH_FIELDS.includes(f)) return;
     clearTimeout(checkTimers[f]);
     checkTimers[f] = setTimeout(() => checkPath(f), 400);
   });
@@ -345,6 +388,8 @@ function hideResults() {
   $('banner-success').classList.remove('visible');
   $('banner-error').classList.remove('visible');
   $('open-btn').classList.remove('visible');
+  $('mail-btn').classList.remove('visible');
+  $('mail-hint').classList.remove('visible');
 }
 
 function showSuccess(path) {
@@ -364,8 +409,8 @@ async function handleRun() {
   if (isRunning) return;
 
   const body = {};
-  for (const f of FIELDS) {
-    body[f] = $(f).value.trim();
+  FIELDS.forEach((f) => { body[f] = $(f).value.trim(); });
+  for (const f of PATH_FIELDS) {
     if (!body[f]) {
       showError(f === 'source_folder'
         ? 'Please enter the local artwork folder.'
@@ -376,6 +421,7 @@ async function handleRun() {
   }
 
   hideResults();
+  zipReady = false;
   setRunning(true);
   renderLog(['Starting…']);
 
@@ -406,11 +452,13 @@ function startPolling() {
     try {
       const s = await (await fetch(`${API}/status`)).json();
       if (s.log.length !== seen) { renderLog(s.log); seen = s.log.length; }
+      zipReady = !!s.zip_ready;
       if (!s.running) {
         clearInterval(pollTimer);
         setRunning(false);
         if (s.error)     showError(s.error);
         else if (s.done) showSuccess(s.output_path);
+        if (zipReady) $('mail-btn').classList.add('visible');
       }
     } catch (_) {}
   }, 800);
@@ -425,6 +473,29 @@ async function openOutput() {
     }
   } catch (_) {
     showError('Could not open the output folder.');
+  }
+}
+
+async function composeEmail() {
+  try {
+    const r = await fetch(`${API}/compose-email`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { showError(d.error ?? 'Could not open the mail draft.'); return; }
+
+    const hint = $('mail-hint');
+    hint.innerHTML =
+      `<b>Gmail is open with the draft written.</b><br>` +
+      `${d.zip_name} (${d.size_mb} MB) is selected in your file manager — ` +
+      `drag it onto the compose window to attach it, then send.` +
+      (d.path_copied ? `<br>Its path is also on your clipboard.` : ``) +
+      (d.too_large
+        ? `<br><span class="warn">⚠ ${d.size_mb} MB is over Gmail's ` +
+          `${d.gmail_attach_limit_mb} MB attachment limit — Gmail will offer ` +
+          `to send it as a Drive link instead.</span>`
+        : ``);
+    hint.classList.add('visible');
+  } catch (_) {
+    showError('Could not open the mail draft.');
   }
 }
 

@@ -14,6 +14,8 @@ import os
 import subprocess
 import sys
 import threading
+import urllib.parse
+import webbrowser
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -51,6 +53,7 @@ _run_state = {
     "error":       None,
     "done":        False,
     "output_path": None,   # folder the finished run was written to
+    "zip_path":    None,   # sibling .zip, only built when emailing
 }
 
 
@@ -67,6 +70,48 @@ def _open_in_file_manager(path: str):
         os.startfile(path)  # noqa: F821 — Windows-only builtin
     else:
         subprocess.Popen(["xdg-open", path])
+
+
+def _reveal_file(path: str):
+    """
+    Open the containing folder with the file itself selected, so it can be
+    dragged straight into the Gmail compose window.
+
+    Browsers cannot attach a local file to a webmail compose box — that is a
+    sandbox rule, not a missing feature — so revealing the file pre-selected is
+    the closest thing to an attachment we can offer for Gmail.
+    """
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", path])          # -R = reveal, selected
+    elif os.name == "nt":
+        subprocess.Popen(["explorer", f"/select,{path}"])
+    else:
+        # No portable "select this file" on Linux desktops; open the folder.
+        subprocess.Popen(["xdg-open", os.path.dirname(path)])
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Put the ZIP's path on the clipboard as a fallback for the drag."""
+    try:
+        if sys.platform == "darwin":
+            cmd = ["pbcopy"]
+        elif os.name == "nt":
+            cmd = ["clip"]
+        else:
+            cmd = ["xclip", "-selection", "clipboard"]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        proc.communicate(text.encode())
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _gmail_compose_url(to: str, cc: str, subject: str, body: str) -> str:
+    """Build a Gmail web compose URL with the fields pre-filled."""
+    params = {"view": "cm", "fs": "1", "to": to, "su": subject, "body": body}
+    if cc:
+        params["cc"] = cc
+    return "https://mail.google.com/mail/?" + urllib.parse.urlencode(params)
 
 
 # ── UI ─────────────────────────────────────────────────────────────────────────
@@ -86,7 +131,7 @@ def get_settings():
 @app.post("/api/settings")
 def post_settings():
     body = request.get_json(force=True)
-    allowed = {"source_folder", "output_folder"}
+    allowed = {"source_folder", "output_folder", "recipient_email", "cc_email"}
     cfg = load_config()
     cfg.update({k: v for k, v in body.items() if k in allowed})
     save_config(cfg)
@@ -133,12 +178,16 @@ def check_path():
 
 @app.get("/api/status")
 def get_status():
+    zip_path = _run_state.get("zip_path")
+    ready = bool(zip_path) and os.path.exists(zip_path)
     return jsonify({
         "running":     _run_state["running"],
         "log":         _run_state["log"],
         "error":       _run_state["error"],
         "done":        _run_state["done"],
         "output_path": _run_state["output_path"],
+        "zip_ready":   ready,
+        "zip_name":    os.path.basename(zip_path) if ready else None,
     })
 
 
@@ -148,8 +197,10 @@ def post_run():
         return jsonify({"error": "Already running"}), 409
 
     body = request.get_json(force=True)
-    source_folder = (body.get("source_folder") or "").strip()
-    output_folder = (body.get("output_folder") or "").strip()
+    source_folder   = (body.get("source_folder")   or "").strip()
+    output_folder   = (body.get("output_folder")   or "").strip()
+    recipient_email = (body.get("recipient_email") or "").strip()
+    cc_email        = (body.get("cc_email")        or "").strip()
 
     missing = [f for f, v in [
         ("source_folder", source_folder),
@@ -158,12 +209,24 @@ def post_run():
     if missing:
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
-    save_config({"source_folder": source_folder, "output_folder": output_folder})
+    save_config({
+        "source_folder":   source_folder,
+        "output_folder":   output_folder,
+        "recipient_email": recipient_email,
+        "cc_email":        cc_email,
+    })
+
+    # A ZIP is only worth building when there's someone to send it to; without
+    # a recipient the run behaves exactly as it always has.
+    make_zip = bool(recipient_email)
 
     _run_state.update({
         "running": True, "log": [], "error": None,
-        "done": False, "output_path": None,
+        "done": False, "output_path": None, "zip_path": None,
     })
+
+    def _record_zip(path: str):
+        _run_state["zip_path"] = path
 
     def worker():
         try:
@@ -172,6 +235,8 @@ def post_run():
                 source_folder=source_folder,
                 output_folder=output_folder,
                 log=_append_log,
+                make_zip=make_zip,
+                on_zip_ready=_record_zip,
             )
         except Exception as exc:
             _run_state["error"] = str(exc)
@@ -197,12 +262,64 @@ def open_output():
     return jsonify({"ok": True})
 
 
+@app.post("/api/compose-email")
+def compose_email():
+    """
+    Open a pre-filled Gmail compose window and reveal the ZIP for the drag.
+
+    Gmail runs in a browser tab, and a web page cannot be handed a local file
+    by anything other than the user — so the attachment step stays manual by
+    design. What we can do is remove every other step: the draft opens
+    addressed and written, the ZIP is revealed already selected in the file
+    manager, and its path goes on the clipboard as a backup.
+    """
+    zip_path = _run_state.get("zip_path")
+    if not zip_path or not os.path.exists(zip_path):
+        return jsonify({
+            "error": "No ZIP to attach. Fill in a recipient email before "
+                     "running so the archive gets built."
+        }), 404
+
+    cfg = load_config()
+    recipient = (cfg.get("recipient_email") or "").strip()
+    cc        = (cfg.get("cc_email")        or "").strip()
+    if not recipient:
+        return jsonify({"error": "No recipient email saved."}), 400
+
+    run_name = os.path.splitext(os.path.basename(zip_path))[0]
+    size_mb  = os.path.getsize(zip_path) / (1024 * 1024)
+
+    subject = f"Print orders — {run_name}"
+    body = (
+        f"Attached: {os.path.basename(zip_path)} ({size_mb:.1f} MB)\n\n"
+        f"Sorted into A3 / A4 / A5 / PP / stickers, with not_found.csv listing "
+        f"anything unresolved.\n\n"
+        f"Local copy: {zip_path}\n"
+    )
+
+    try:
+        webbrowser.open(_gmail_compose_url(recipient, cc, subject, body))
+        _reveal_file(zip_path)
+        copied = _copy_to_clipboard(zip_path)
+    except Exception as exc:                # noqa: BLE001
+        return jsonify({"error": f"Could not open the mail draft: {exc}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "zip_name":       os.path.basename(zip_path),
+        "size_mb":        round(size_mb, 1),
+        "path_copied":    copied,
+        "gmail_attach_limit_mb": 25,
+        "too_large":      size_mb > 25,
+    })
+
+
 @app.post("/api/reset")
 def post_reset():
     # Nothing to clean up — a finished run is the operator's folder now.
     _run_state.update({
         "running": False, "log": [], "error": None,
-        "done": False, "output_path": None,
+        "done": False, "output_path": None, "zip_path": None,
     })
     return jsonify({"ok": True})
 

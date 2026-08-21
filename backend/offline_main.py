@@ -20,6 +20,7 @@ import re
 import shutil
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -119,6 +120,31 @@ def unique_run_folder(output_folder: str) -> str:
     return f"{base}_{counter}"
 
 
+def zip_run_folder(run_dir: str, log=print) -> str:
+    """
+    Zip a finished run folder into a sibling ``<name>.zip``.
+
+    Only needed when the result is going out by email — a mail draft needs one
+    file, not a directory. The run folder itself is left exactly as it is.
+    """
+    zip_path = f"{run_dir}.zip"
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+
+    base = os.path.basename(run_dir)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root_dir, _, files in os.walk(run_dir):
+            for name in sorted(files):
+                full = os.path.join(root_dir, name)
+                # Store paths under the run folder's own name, so unzipping
+                # produces one tidy folder rather than loose A3/A4/… dirs.
+                zf.write(full, os.path.join(base, os.path.relpath(full, run_dir)))
+
+    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+    log(f"Created {os.path.basename(zip_path)} ({size_mb:.1f} MB) for emailing.")
+    return zip_path
+
+
 def remove_empty_folders(path: str):
     """Bottom-up sweep that deletes any folder left with nothing in it."""
     for root_dir, dirs, _ in os.walk(path, topdown=False):
@@ -193,7 +219,8 @@ def validate_paths(source_folder: str, output_folder: str) -> tuple[str, str]:
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
-def run_offline(source_folder: str, output_folder: str, log=print) -> str:
+def run_offline(source_folder: str, output_folder: str, log=print,
+                make_zip: bool = False, on_zip_ready=None) -> str:
     """
     Run the offline fulfilment pipeline.
 
@@ -203,6 +230,10 @@ def run_offline(source_folder: str, output_folder: str, log=print) -> str:
     output_folder : Local folder the dated run folder is created inside.
     log           : Callable for progress messages (offline_api passes its
                     log appender so the messages show up in the UI).
+    make_zip      : Also produce a sibling .zip of the run folder. Needed only
+                    when the result is being emailed, since a mail draft can
+                    only carry a file.
+    on_zip_ready  : Optional callback handed the .zip path once it exists.
 
     Returns
     -------
@@ -331,6 +362,19 @@ def run_offline(source_folder: str, output_folder: str, log=print) -> str:
         # ── Step 7: publish the finished folder ──────────────────────────────
         os.rename(staging_dir, final_dir)
         log(f"✅  Done — {copied} file(s) written to {final_dir}")
+
+        # ── Step 8: optional ZIP, for attaching to an email ───────────────────
+        if make_zip:
+            try:
+                zip_path = zip_run_folder(final_dir, log)
+                if on_zip_ready:
+                    on_zip_ready(zip_path)
+            except Exception as exc:        # noqa: BLE001
+                # The folder is the real deliverable; a failed zip must not
+                # cost the operator a finished run.
+                log(f"⚠ Could not create the ZIP for emailing: {exc}")
+                log("  The output folder itself is complete and usable.")
+
         return final_dir
 
     except Exception:

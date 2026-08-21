@@ -10,9 +10,10 @@ function useSettings(setForm) {
       .then((r) => r.json())
       .then((cfg) =>
         setForm({
-          source_folder_id: cfg.source_folder_id ?? "",
-          recipient_email:  cfg.recipient_email  ?? "",
-          cc_email:         cfg.cc_email         ?? "",
+          source_folder_id:   cfg.source_folder_id   ?? "",
+          source_folder_id_2: cfg.source_folder_id_2 ?? "",
+          recipient_email:    cfg.recipient_email    ?? "",
+          cc_email:           cfg.cc_email           ?? "",
         })
       )
       .catch(() => {});
@@ -147,9 +148,10 @@ function Spinner() { return <span style={s.spinner} />; }
 
 export default function App() {
   const [form, setForm] = useState({
-    source_folder_id: "",
-    recipient_email:  "",
-    cc_email:         "",
+    source_folder_id:   "",
+    source_folder_id_2: "",
+    recipient_email:    "",
+    cc_email:           "",
   });
 
   const setFormCb = useCallback((next) => setForm(next), []);
@@ -162,8 +164,13 @@ export default function App() {
   const handleChange = (id, val) => setForm((prev) => ({ ...prev, [id]: val }));
 
   const handleRun = () => {
-    if (!form.source_folder_id.trim()) { alert("Please enter the Google Drive source folder ID."); return; }
+    if (!form.source_folder_id.trim()) { alert("Please enter the first Google Drive source folder ID."); return; }
     if (!form.recipient_email.trim())  { alert("Please enter the recipient email."); return; }
+    const second = form.source_folder_id_2.trim();
+    if (second && second === form.source_folder_id.trim()) {
+      alert("Both source folders are the same ID. Leave the second one empty if there is only one folder.");
+      return;
+    }
     run(form);
   };
 
@@ -186,11 +193,11 @@ export default function App() {
 
         <div style={s.card}>
 
-          {/* Source folder */}
-          <div style={s.sectionLabel}><span>Google Drive Source</span><span style={s.sectionLine} /></div>
+          {/* Source folders */}
+          <div style={s.sectionLabel}><span>Google Drive Sources</span><span style={s.sectionLine} /></div>
           <div style={s.fieldGroup}>
             <div style={s.field}>
-              <label style={s.label} htmlFor="source_folder_id">Artwork Source Folder</label>
+              <label style={s.label} htmlFor="source_folder_id">Artwork Folder 1</label>
               <input
                 id="source_folder_id"
                 type="text"
@@ -201,10 +208,26 @@ export default function App() {
                 onChange={(e) => handleFolderInput("source_folder_id", e.target.value)}
                 style={{ ...s.input, ...(isRunning ? s.inputDisabled : {}) }}
               />
+            </div>
+            <div style={s.field}>
+              <label style={s.label} htmlFor="source_folder_id_2">
+                Artwork Folder 2<span style={s.optTag}> optional</span>
+              </label>
+              <input
+                id="source_folder_id_2"
+                type="text"
+                value={form.source_folder_id_2}
+                placeholder="Second folder, if designs are split across two"
+                disabled={isRunning}
+                autoComplete="off"
+                onChange={(e) => handleFolderInput("source_folder_id_2", e.target.value)}
+                style={{ ...s.input, ...(isRunning ? s.inputDisabled : {}) }}
+              />
               <span style={s.note}>
-                Open your artwork folder in Google Drive, then copy the ID from the URL:
-                drive.google.com/drive/folders/<span style={{ color: "#e8ff5a" }}>THIS_PART</span>.
-                You can also paste the full URL — the ID will be extracted automatically.
+                Both folders are searched, subfolders included. If the same SKU exists in
+                both, <span style={{ color: "#e8ff5a" }}>Folder 1 wins</span>.
+                Paste the ID or the full URL — drive.google.com/drive/folders/
+                <span style={{ color: "#e8ff5a" }}>THIS_PART</span> — either works.
               </span>
             </div>
           </div>

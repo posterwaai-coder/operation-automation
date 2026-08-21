@@ -76,7 +76,7 @@ def get_settings():
 @app.post("/api/settings")
 def post_settings():
     body = request.get_json(force=True)
-    allowed = {"source_folder_id", "recipient_email", "cc_email"}
+    allowed = {"source_folder_id", "source_folder_id_2", "recipient_email", "cc_email"}
     cfg = load_config()
     cfg.update({k: v for k, v in body.items() if k in allowed})
     save_config(cfg)
@@ -106,9 +106,10 @@ def post_run():
         return jsonify({"error": "Already running"}), 409
 
     body = request.get_json(force=True)
-    source_folder_id = body.get("source_folder_id", "").strip()
-    recipient_email  = body.get("recipient_email",  "").strip()
-    cc_email         = body.get("cc_email",         "").strip()
+    source_folder_id   = body.get("source_folder_id",   "").strip()
+    source_folder_id_2 = body.get("source_folder_id_2", "").strip()
+    recipient_email    = body.get("recipient_email",    "").strip()
+    cc_email           = body.get("cc_email",           "").strip()
 
     missing = [f for f, v in [
         ("source_folder_id", source_folder_id),
@@ -117,10 +118,20 @@ def post_run():
     if missing:
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
+    if source_folder_id_2 and source_folder_id_2 == source_folder_id:
+        return jsonify({
+            "error": "Both source folders are the same ID. Leave the second "
+                     "one empty if there is only one folder."
+        }), 400
+
+    # Order matters: folder 1 wins any SKU present in both.
+    folder_ids = [source_folder_id] + ([source_folder_id_2] if source_folder_id_2 else [])
+
     save_config({
-        "source_folder_id": source_folder_id,
-        "recipient_email":  recipient_email,
-        "cc_email":         cc_email,
+        "source_folder_id":   source_folder_id,
+        "source_folder_id_2": source_folder_id_2,
+        "recipient_email":    recipient_email,
+        "cc_email":           cc_email,
     })
 
     _run_state.update({
@@ -143,7 +154,7 @@ def post_run():
         try:
             from main import run_script
             zip_path = run_script(
-                source_folder_id=source_folder_id,
+                source_folder_ids=folder_ids,
                 recipient_email=recipient_email,
                 cc_email=cc_email,
                 log=_append_log,

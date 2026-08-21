@@ -256,6 +256,35 @@ overwriting the first. The run is assembled in a hidden `.…partial` folder and
 renamed into place only once it finishes, so a run that fails halfway never
 leaves behind a folder that looks complete.
 
+### Two Drive source folders (online)
+
+Artwork is split across more than one Drive folder, so the online build takes
+two. **Artwork Folder 1** is required; **Artwork Folder 2** is optional — leave
+it empty and the run behaves exactly as it did with one folder.
+
+Both are walked recursively, subfolders included, and merged into a single
+lookup. **If the same SKU exists in both, Folder 1 wins.** The order is the
+rule, so the same run always picks the same file — with an unordered merge the
+winner would come down to whichever folder the Drive API happened to paginate
+first, which is not something an operator can reason about or rely on.
+
+Either field accepts a bare ID or a full `drive.google.com/drive/folders/…`
+URL; the ID is extracted automatically.
+
+The log reports each folder separately, so it's obvious when one of them is
+returning nothing:
+
+```
+Indexing 2 artwork source folders on Google Drive…
+  Folder 1: 4812 lookup key(s) from 1a2B3c…
+  Folder 2: 1190 lookup key(s) from 9zY8x7…
+Indexed 5794 lookup key(s) across 2 folders.
+```
+
+A folder that can't be read fails the run immediately, before anything is
+downloaded, naming which of the two it was — the usual cause is a wrong ID or a
+folder that was never shared with the service account.
+
 ### SKU matching (both pipelines)
 
 SKU routing and artwork matching live in **`backend/sku_rules.py`** and are

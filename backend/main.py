@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from sticker_processor import StickerProcessor
 from sku_rules import (
     index_file,
+    merge_indexes,
     resolve_with_size_fallback,
     route_sku,
     unique_dest_path,
@@ -134,10 +135,16 @@ def _get_drive_service():
 
 # ── Drive helpers ─────────────────────────────────────────────────────────────
 
-def _build_drive_index(service, folder_id: str) -> tuple[dict, dict]:
+def _build_drive_index(service, folder_ids, log=print) -> tuple[dict, dict]:
     """
-    Recursively walk a Drive folder (including all subfolders) and return two
-    lookup tables mapping a SKU-shaped key to ``(file_id, drive_filename)``.
+    Walk one or more Drive folders (each recursively, subfolders included) and
+    return two lookup tables mapping a SKU-shaped key to
+    ``(file_id, drive_filename)``.
+
+    Artwork is spread across more than one folder, so several source folders can
+    be indexed into a single view. They are merged in the order given and the
+    **earlier folder wins** any SKU that appears in both — see
+    ``sku_rules.merge_indexes``.
 
     The filename is carried alongside the id because the destination file needs
     the real extension: a bare-stem match used to record no extension at all,
@@ -146,9 +153,28 @@ def _build_drive_index(service, folder_id: str) -> tuple[dict, dict]:
 
     Nothing is downloaded here — this only decides what is worth fetching.
     """
-    by_name, by_lower = {}, {}
-    _walk_drive_folder(service, folder_id, by_name, by_lower)
-    return by_name, by_lower
+    if isinstance(folder_ids, str):
+        folder_ids = [folder_ids]
+    folder_ids = [f.strip() for f in folder_ids if f and f.strip()]
+    if not folder_ids:
+        raise ValueError("No Drive source folder was given.")
+
+    per_folder = []
+    for position, folder_id in enumerate(folder_ids, start=1):
+        by_name, by_lower = {}, {}
+        try:
+            _walk_drive_folder(service, folder_id, by_name, by_lower)
+        except Exception as exc:            # noqa: BLE001
+            raise RuntimeError(
+                f"Could not read Drive source folder {position} ({folder_id}). "
+                f"Check the ID is right and that the folder is shared with the "
+                f"account this app authenticates as. Underlying error: {exc}"
+            ) from exc
+
+        log(f"  Folder {position}: {len(by_name)} lookup key(s) from {folder_id}")
+        per_folder.append((by_name, by_lower))
+
+    return merge_indexes(per_folder)
 
 
 def _walk_drive_folder(service, folder_id: str, by_name: dict, by_lower: dict):
@@ -337,14 +363,17 @@ def process_sticker_folders(input_dir: Path, output_dir: Path) -> None:
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
-def run_script(source_folder_id: str, recipient_email: str, cc_email: str,
+def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                log=print, on_zip_ready=None) -> str:
     """
     Run the full fulfilment pipeline.
 
     Parameters
     ----------
-    source_folder_id : Google Drive folder ID for the artwork source folder.
+    source_folder_ids: Google Drive folder ID for the artwork source, or a list
+                       of them when artwork is split across several folders.
+                       They are searched in order and the first folder wins any
+                       SKU that appears in more than one.
     recipient_email  : Primary email to notify when done.
     cc_email         : Optional CC email.
     log              : Callable used for progress messages (default: print).
@@ -396,10 +425,15 @@ def run_script(source_folder_id: str, recipient_email: str, cc_email: str,
         log(f"Found {len(unfulfilled_skus)} unfulfilled SKU(s).")
 
         # ── Step 2: build Drive index (one API walk, no downloads yet) ───────
-        log("Indexing artwork source folder on Google Drive…")
+        folder_ids = ([source_folder_ids] if isinstance(source_folder_ids, str)
+                      else list(source_folder_ids))
+        folder_ids = [f.strip() for f in folder_ids if f and f.strip()]
+
+        plural = "folder" if len(folder_ids) == 1 else "folders"
+        log(f"Indexing {len(folder_ids)} artwork source {plural} on Google Drive…")
         service = _get_drive_service()
-        by_name, by_lower = _build_drive_index(service, source_folder_id)
-        log(f"Indexed {len(by_name)} lookup key(s) in the Drive source folder.")
+        by_name, by_lower = _build_drive_index(service, folder_ids, log)
+        log(f"Indexed {len(by_name)} lookup key(s) across {len(folder_ids)} {plural}.")
 
         # ── Step 3: sort SKUs and download only what's needed ────────────────
         log("Sorting SKUs and downloading required artwork files…")

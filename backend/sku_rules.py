@@ -78,6 +78,25 @@ def index_file(by_name: dict, by_lower: dict, name: str, value):
     return True
 
 
+def merge_indexes(sources):
+    """
+    Merge several ``(by_name, by_lower)`` index pairs into one.
+
+    Earlier sources win every conflict. That matters once artwork is spread
+    across more than one folder: when the same SKU exists in both, the run has
+    to pick the same file every time, and "the first folder you listed" is a
+    rule an operator can reason about — unlike "whichever the API paginated
+    first", which is what an unordered merge would give.
+    """
+    merged_name, merged_lower = {}, {}
+    for by_name, by_lower in sources:
+        for key, value in by_name.items():
+            merged_name.setdefault(key, value)
+        for key, value in by_lower.items():
+            merged_lower.setdefault(key, value)
+    return merged_name, merged_lower
+
+
 def resolve_artwork(filename: str, by_name: dict, by_lower: dict,
                     prefer_transparent: bool = False):
     """

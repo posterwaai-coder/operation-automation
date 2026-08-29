@@ -182,20 +182,41 @@ No new pip packages. It uses `requests` and `Pillow`, both already in
 |---|---|
 | Model | `gemini-3-pro-image-preview` (Nano Banana Pro) |
 | Quality | `2K` |
-| Output size | 1742 × 2528 |
-| Aspect ratio sent | `2:3` |
 
 1742 × 2528 is a ratio of 0.689, which is **not** one of the API's supported
 aspect ratios (1:1, 3:2, 2:3, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9). 2:3
-(0.667) is the nearest — 3:4 (0.75) is much further off — so the image is
-generated at 2K/2:3 and then resized to exactly 1742 × 2528 with Pillow
+(0.667) is the nearest — 3:4 (0.75) is much further off — so portrait images
+are generated at 2K/2:3 and then resized to the exact size with Pillow
 (LANCZOS, JPEG quality 95, no chroma subsampling).
+
+### Orientation
+
+Every custom poster leaves this module portrait or square — never landscape.
+Orientation is decided **before** the upscale, because it picks both the aspect
+ratio requested and the size finished at:
+
+| Source shape | What happens | Aspect sent | Output size |
+|---|---|---|---|
+| Landscape | rotated 90° **clockwise** to stand upright | `2:3` | 1742 × 2528 |
+| Portrait | left as-is | `2:3` | 1742 × 2528 |
+| Square | ratio kept, never cropped or letterboxed | `1:1` | 2528 × 2528 |
+
+Clockwise means the original's left edge becomes the top.
+
+EXIF orientation is baked in first. A phone camera records a sideways photo
+plus a "rotate me" flag, so raw pixel dimensions can read landscape when the
+image is really portrait — judging orientation before applying the flag would
+fire the rotation on the wrong images and leave them upside-down.
+
+The rotation is applied on the **failure path too**: a poster that couldn't be
+upscaled still arrives portrait in the Non-Upscaled folder, because an operator
+who wants upright output wants it either way.
 
 ### Output folders
 
 ```
-Upscaled framed Custom Posters/<N> copy/<name>.jpg     1742 × 2528
-Non-Upscaled Custom posters/<N> copy/<name>.jpg        original, untouched
+Upscaled framed Custom Posters/<N> copy/<name>.jpg     1742 × 2528, or 2528 × 2528 if square
+Non-Upscaled Custom posters/<N> copy/<name>.jpg        original resolution, upright
 ```
 
 The `N copy` subfolder is preserved inside both, so the quantity to print is

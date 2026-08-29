@@ -24,7 +24,7 @@ import io
 import os
 
 import requests
-from PIL import Image
+from PIL import Image, ImageOps
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -37,8 +37,19 @@ IMAGE_QUALITY = "2K"
 # 1742x2528 is a ratio of 0.689, which is not one of the API's supported
 # aspect ratios. 2:3 (0.667) is the nearest — 3:4 (0.75) is much further off —
 # so we generate at 2:3 and resize to the exact target below.
-ASPECT_RATIO = "2:3"
-TARGET_SIZE = (1742, 2528)
+PORTRAIT_ASPECT = "2:3"
+PORTRAIT_SIZE = (1742, 2528)
+
+# Square artwork keeps its ratio rather than being cropped or letterboxed into
+# the portrait shape. 2528 matches the portrait's long edge.
+SQUARE_ASPECT = "1:1"
+SQUARE_SIZE = (2528, 2528)
+
+# Landscape artwork is turned upright before upscaling, so every custom poster
+# leaves this module either portrait or square — never landscape.
+# ROTATE_270 is a 270 degree counter-clockwise turn, i.e. 90 degrees clockwise:
+# the original's left edge becomes the top.
+ROTATE_TO_PORTRAIT = Image.Transpose.ROTATE_270
 
 # Two attempts total: one retry when the first produces no image.
 MAX_ATTEMPTS = 2
@@ -132,9 +143,49 @@ def _describe_failure(payload) -> str:
     return "no image in response"
 
 
+def _prepare_source(source_path: str):
+    """
+    Normalise the downloaded poster before it is sent for upscaling.
+
+    Returns ``(jpeg_bytes, aspect_ratio, target_size, note)``.
+
+    Three things happen here:
+
+    * EXIF orientation is baked in first. Phone cameras record a sideways photo
+      plus a "rotate me" flag, so the raw pixel dimensions can say landscape
+      when the image is really portrait — orientation has to be judged after
+      the flag is applied, or the rotation below fires on the wrong images.
+    * Landscape artwork is rotated 90 degrees clockwise to stand upright.
+    * The aspect ratio and final size are chosen from the resulting shape:
+      square stays square, everything else is portrait.
+    """
+    with Image.open(source_path) as opened:
+        image = ImageOps.exif_transpose(opened)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        width, height = image.size
+        if width > height:
+            image = image.transpose(ROTATE_TO_PORTRAIT)
+            note = f"landscape {width}x{height} rotated 90 clockwise to portrait"
+            aspect, target = PORTRAIT_ASPECT, PORTRAIT_SIZE
+        elif width == height:
+            note = f"square {width}x{height} kept square"
+            aspect, target = SQUARE_ASPECT, SQUARE_SIZE
+        else:
+            note = f"portrait {width}x{height}"
+            aspect, target = PORTRAIT_ASPECT, PORTRAIT_SIZE
+
+        buffer = io.BytesIO()
+        image.save(buffer, "JPEG", quality=95, subsampling=0)
+
+    return buffer.getvalue(), aspect, target, note
+
+
 # ── Gemini call ───────────────────────────────────────────────────────────────
 
-def _request_upscale(image_bytes: bytes, mime_type: str, api_key: str):
+def _request_upscale(image_bytes: bytes, mime_type: str, api_key: str,
+                     aspect_ratio: str = PORTRAIT_ASPECT):
     """One call to Gemini. Returns (image_bytes, None) or (None, reason)."""
     body = {
         "model": GEMINI_MODEL,
@@ -149,7 +200,7 @@ def _request_upscale(image_bytes: bytes, mime_type: str, api_key: str):
         "response_format": {
             "type": "image",
             "mime_type": "image/jpeg",
-            "aspect_ratio": ASPECT_RATIO,
+            "aspect_ratio": aspect_ratio,
             "image_size": IMAGE_QUALITY,
         },
     }
@@ -183,13 +234,14 @@ def _request_upscale(image_bytes: bytes, mime_type: str, api_key: str):
     return data, None
 
 
-def upscale_bytes(image_bytes: bytes, mime_type: str, api_key: str, log=print):
+def upscale_bytes(image_bytes: bytes, mime_type: str, api_key: str, log=print,
+                  aspect_ratio: str = PORTRAIT_ASPECT):
     """
     Upscale one image, retrying once. Returns the new bytes, or None if both
     attempts failed.
     """
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        data, reason = _request_upscale(image_bytes, mime_type, api_key)
+        data, reason = _request_upscale(image_bytes, mime_type, api_key, aspect_ratio)
         if data:
             if attempt > 1:
                 log(f"    Upscale succeeded on attempt {attempt}.")
@@ -211,17 +263,17 @@ def _mime_for(path: str) -> str:
     }.get(ext, "image/jpeg")
 
 
-def _save_at_target_size(image_bytes: bytes, dest_path: str):
+def _save_at_target_size(image_bytes: bytes, dest_path: str, target_size):
     """
-    Write the image at exactly TARGET_SIZE.
+    Write the image at exactly ``target_size``.
 
     The API returns 2K at the nearest supported aspect ratio, which is close to
-    but not exactly 1742x2528, so the final resize pins it to the print size.
+    but not exactly the print dimensions, so this final resize pins it.
     """
     with Image.open(io.BytesIO(image_bytes)) as img:
         if img.mode != "RGB":
             img = img.convert("RGB")
-        img = img.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
+        img = img.resize(target_size, Image.Resampling.LANCZOS)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
         img.save(dest_path, "JPEG", quality=95, subsampling=0)
 
@@ -231,7 +283,12 @@ def _save_at_target_size(image_bytes: bytes, dest_path: str):
 def place_custom_poster(source_path: str, destination_root: str, quantity,
                         file_name: str, log=print):
     """
-    Upscale a downloaded custom poster and file it under the right folder.
+    Normalise, upscale and file a downloaded custom poster.
+
+    Landscape artwork is turned upright before upscaling and square artwork
+    keeps its ratio, so everything delivered here is portrait or square. The
+    rotation is applied on the failure path too — an operator wanting portrait
+    output wants it whether or not the upscale worked.
 
     Parameters
     ----------
@@ -250,43 +307,53 @@ def place_custom_poster(source_path: str, destination_root: str, quantity,
     def _destination(folder: str) -> str:
         return os.path.join(destination_root, folder, f"{quantity} copy", file_name)
 
-    def _keep_original(reason: str):
+    def _file_unupscaled(reason: str, payload: bytes = None):
+        """Deliver the poster without an upscale, rotated where that applied."""
         target = _destination(NON_UPSCALED_DIR)
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        try:
-            os.replace(source_path, target)
-        except OSError:
-            with open(source_path, "rb") as src, open(target, "wb") as dst:
-                dst.write(src.read())
-            os.remove(source_path)
+        if payload is not None:
+            with open(target, "wb") as handle:
+                handle.write(payload)
+            if os.path.exists(source_path):
+                os.remove(source_path)
+        else:
+            # Preparation itself failed, so hand over the raw download intact.
+            try:
+                os.replace(source_path, target)
+            except OSError:
+                with open(source_path, "rb") as src, open(target, "wb") as dst:
+                    dst.write(src.read())
+                os.remove(source_path)
         log(f"    → {NON_UPSCALED_DIR} ({reason})")
         return target, False
 
-    if not api_key:
-        return _keep_original("GEMINI_API_KEY is not set")
-
+    # Normalise first: orientation decides both the aspect ratio we ask for and
+    # the size we finish at, so it has to happen before anything else.
     try:
-        with open(source_path, "rb") as handle:
-            original = handle.read()
-    except OSError as exc:
-        return _keep_original(f"could not read the download: {exc}")
+        prepared, aspect, target_size, note = _prepare_source(source_path)
+        log(f"    {note}")
+    except Exception as exc:        # noqa: BLE001
+        return _file_unupscaled(f"could not read the download: {exc}")
 
-    log(f"    Upscaling with {GEMINI_MODEL} at {IMAGE_QUALITY}…")
-    upscaled = upscale_bytes(original, _mime_for(source_path), api_key, log)
+    if not api_key:
+        return _file_unupscaled("GEMINI_API_KEY is not set", prepared)
+
+    log(f"    Upscaling with {GEMINI_MODEL} at {IMAGE_QUALITY}, {aspect}…")
+    upscaled = upscale_bytes(prepared, "image/jpeg", api_key, log, aspect)
 
     if not upscaled:
-        return _keep_original(FAILURE_REASON)
+        return _file_unupscaled(FAILURE_REASON, prepared)
 
     target = _destination(UPSCALED_DIR)
     try:
-        _save_at_target_size(upscaled, target)
+        _save_at_target_size(upscaled, target, target_size)
     except Exception as exc:        # noqa: BLE001
         if os.path.exists(target):
             os.remove(target)
-        return _keep_original(f"{FAILURE_REASON} — could not save: {exc}")
+        return _file_unupscaled(f"{FAILURE_REASON} — could not save: {exc}", prepared)
 
     if os.path.exists(source_path):
         os.remove(source_path)
 
-    log(f"    → {UPSCALED_DIR} at {TARGET_SIZE[0]}x{TARGET_SIZE[1]}")
+    log(f"    → {UPSCALED_DIR} at {target_size[0]}x{target_size[1]}")
     return target, True

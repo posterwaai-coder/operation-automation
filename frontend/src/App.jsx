@@ -14,6 +14,7 @@ function useSettings(setForm) {
           source_folder_id_2: cfg.source_folder_id_2 ?? "",
           recipient_email:    cfg.recipient_email    ?? "",
           cc_email:           cfg.cc_email           ?? "",
+          use_upscaler:       cfg.use_upscaler === true,
         })
       )
       .catch(() => {});
@@ -152,6 +153,7 @@ export default function App() {
     source_folder_id_2: "",
     recipient_email:    "",
     cc_email:           "",
+    use_upscaler:       false,
   });
 
   const setFormCb = useCallback((next) => setForm(next), []);
@@ -249,6 +251,33 @@ export default function App() {
             />
           </div>
 
+          <div style={s.divider} />
+
+          {/* Custom poster upscaling */}
+          <div style={s.sectionLabel}><span>Custom Posters</span><span style={s.sectionLine} /></div>
+          <label
+            style={{ ...s.checkRow, ...(isRunning ? s.inputDisabled : {}) }}
+            htmlFor="use_upscaler"
+          >
+            <input
+              id="use_upscaler"
+              type="checkbox"
+              checked={form.use_upscaler}
+              disabled={isRunning}
+              onChange={(e) => handleChange("use_upscaler", e.target.checked)}
+              style={s.checkbox}
+            />
+            <span>
+              <span style={s.checkLabel}>Upscale custom posters</span>
+              <span style={s.note}>
+                Runs customer-uploaded artwork through Gemini (Nano Banana Pro) at 2K
+                before printing. Off by default — it costs roughly $0.13 per poster.
+                Artwork already above 900&nbsp;px wide or 1200&nbsp;px tall is skipped
+                automatically, since upscaling it would add nothing.
+              </span>
+            </span>
+          </label>
+
           {/* Save indicator */}
           <div style={s.saveRow}>
             <span style={{ ...s.saveInd, opacity: saved ? 1 : 0 }}>✓ Settings saved</span>
@@ -323,6 +352,9 @@ const s = {
   inputDisabled:{ opacity: 0.4, cursor: "not-allowed" },
   note:         { fontSize: 10, color: "#4a4f60", marginTop: 4, lineHeight: 1.6 },
   divider:      { height: 1, background: "#232530", margin: "24px 0" },
+  checkRow:     { display: "flex", alignItems: "flex-start", gap: 12, cursor: "pointer", marginBottom: 24, userSelect: "none" },
+  checkbox:     { width: 16, height: 16, accentColor: "#e8ff5a", cursor: "pointer", marginTop: 2, flexShrink: 0 },
+  checkLabel:   { display: "block", fontSize: 13, color: "#e4e6ef", marginBottom: 4 },
   saveRow:      { display: "flex", justifyContent: "flex-end", marginTop: -8, marginBottom: 12 },
   saveInd:      { fontSize: 10, color: "#4a4f60", letterSpacing: ".08em", transition: "opacity .4s" },
   runBtn:       { width: "100%", padding: "14px 24px", background: "#e8ff5a", color: "#0b0c0f", border: "none", borderRadius: 6, fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 700, letterSpacing: ".04em", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },

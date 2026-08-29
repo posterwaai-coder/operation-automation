@@ -164,6 +164,30 @@ All of it lives in **`backend/custom_upscale.py`**. The fulfilment pipeline in
 otherwise untouched — regular SKUs, stickers, matching and the failsafe all
 behave exactly as before.
 
+### Switching it on
+
+Upscaling is **off by default**. The UI has an **Upscale custom posters**
+tick-box under *Custom Posters*; nothing is sent to Gemini and nothing is
+billed unless it is ticked for that run. The setting is remembered between
+runs, and `POST /api/run` takes `use_upscaler` as a boolean.
+
+### Artwork that is already sharp enough
+
+Even with the box ticked, artwork already above **900 px wide or 1200 px tall**
+(measured after it has been stood upright) is left alone — upscaling it would
+add nothing and would still cost a call. This is deliberately an *or*: either
+dimension clearing its threshold counts as "already sharp enough", which errs
+towards skipping and so towards not spending on posters that do not need it.
+
+A skip is a normal outcome, not a problem, so it is **not** written to the
+error sheet. Only a genuine failure is. The three outcomes:
+
+| Outcome | Folder | Error sheet |
+|---|---|---|
+| Upscaled | `Upscaled framed Custom Posters/` | — |
+| Skipped (box unticked, or already high-res) | `Non-Upscaled Custom posters/` | — |
+| Failed (two attempts, or no API key while ticked) | `Non-Upscaled Custom posters/` | `Upscaling failed` |
+
 ### Setup
 
 Set one environment variable:

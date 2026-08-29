@@ -60,6 +60,20 @@ NON_UPSCALED_DIR = "Non-Upscaled Custom posters"
 
 FAILURE_REASON = "Upscaling failed"
 
+# Outcome of place_custom_poster(). Only FAILED writes a row to the error
+# sheet — a poster skipped on purpose (upscaler switched off, or already
+# sharp enough) is a normal result, not something to triage.
+STATUS_UPSCALED = "upscaled"
+STATUS_SKIPPED = "skipped"
+STATUS_FAILED = "failed"
+
+# Artwork already at or above this size is left alone: it is detailed enough to
+# print, and an upscale would cost a call and a couple of minutes to produce
+# something no better. Measured after the image is stood upright, so "height"
+# and "width" mean the same thing whatever way round it arrived.
+SKIP_ABOVE_HEIGHT = 1200
+SKIP_ABOVE_WIDTH = 900
+
 UPSCALE_PROMPT = (
     "Ultra-high-resolution 4K enhancement based strictly on the provided "
     "reference image.\n"
@@ -147,7 +161,7 @@ def _prepare_source(source_path: str):
     """
     Normalise the downloaded poster before it is sent for upscaling.
 
-    Returns ``(jpeg_bytes, aspect_ratio, target_size, note)``.
+    Returns ``(jpeg_bytes, aspect_ratio, target_size, note, upright_size)``.
 
     Three things happen here:
 
@@ -176,10 +190,23 @@ def _prepare_source(source_path: str):
             note = f"portrait {width}x{height}"
             aspect, target = PORTRAIT_ASPECT, PORTRAIT_SIZE
 
+        upright_size = image.size
         buffer = io.BytesIO()
         image.save(buffer, "JPEG", quality=95, subsampling=0)
 
-    return buffer.getvalue(), aspect, target, note
+    return buffer.getvalue(), aspect, target, note, upright_size
+
+
+def is_already_high_resolution(size) -> bool:
+    """
+    True when the artwork is big enough that upscaling adds nothing.
+
+    Deliberately an OR: either dimension clearing its threshold is taken as
+    "already sharp enough", which errs towards skipping and so towards not
+    spending a paid call on artwork that does not need one.
+    """
+    width, height = size
+    return height > SKIP_ABOVE_HEIGHT or width > SKIP_ABOVE_WIDTH
 
 
 # ── Gemini call ───────────────────────────────────────────────────────────────
@@ -281,34 +308,32 @@ def _save_at_target_size(image_bytes: bytes, dest_path: str, target_size):
 # ── Entry point used by the pipeline ──────────────────────────────────────────
 
 def place_custom_poster(source_path: str, destination_root: str, quantity,
-                        file_name: str, log=print):
+                        file_name: str, log=print, enabled: bool = False):
     """
-    Normalise, upscale and file a downloaded custom poster.
+    Normalise a downloaded custom poster, optionally upscale it, and file it.
 
-    Landscape artwork is turned upright before upscaling and square artwork
-    keeps its ratio, so everything delivered here is portrait or square. The
-    rotation is applied on the failure path too — an operator wanting portrait
-    output wants it whether or not the upscale worked.
+    Landscape artwork is stood upright and square artwork keeps its ratio, so
+    everything delivered here is portrait or square regardless of whether the
+    upscaler ran.
 
     Parameters
     ----------
-    source_path      : the just-downloaded original.
-    destination_root : the run's output directory.
-    quantity         : ordered quantity, used for the ``N copy`` subfolder.
-    file_name        : basename to save as.
+    enabled : whether the operator ticked the upscaler for this run. Off by
+              default, so upscaling never happens unless it was asked for.
 
     Returns
     -------
-    (final_path, ok) : ok is False when the poster landed in the Non-Upscaled
-                       folder, so the caller can record "Upscaling failed".
+    (final_path, status) : status is STATUS_UPSCALED, STATUS_SKIPPED or
+                           STATUS_FAILED. Only STATUS_FAILED should be recorded
+                           in the error sheet — a skip is a normal outcome.
     """
     api_key = os.getenv("GEMINI_API_KEY")
 
     def _destination(folder: str) -> str:
         return os.path.join(destination_root, folder, f"{quantity} copy", file_name)
 
-    def _file_unupscaled(reason: str, payload: bytes = None):
-        """Deliver the poster without an upscale, rotated where that applied."""
+    def _file_unupscaled(reason: str, status: str, payload: bytes = None):
+        """Deliver the poster without an upscale, stood upright where relevant."""
         target = _destination(NON_UPSCALED_DIR)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         if payload is not None:
@@ -325,24 +350,36 @@ def place_custom_poster(source_path: str, destination_root: str, quantity,
                     dst.write(src.read())
                 os.remove(source_path)
         log(f"    → {NON_UPSCALED_DIR} ({reason})")
-        return target, False
+        return target, status
 
-    # Normalise first: orientation decides both the aspect ratio we ask for and
-    # the size we finish at, so it has to happen before anything else.
+    # Normalise first: orientation decides both the aspect ratio requested and
+    # the size finished at, and gives the upright dimensions the size check
+    # below is measured against.
     try:
-        prepared, aspect, target_size, note = _prepare_source(source_path)
+        prepared, aspect, target_size, note, upright = _prepare_source(source_path)
         log(f"    {note}")
     except Exception as exc:        # noqa: BLE001
-        return _file_unupscaled(f"could not read the download: {exc}")
+        return _file_unupscaled(f"could not read the download: {exc}",
+                                STATUS_FAILED)
+
+    if not enabled:
+        return _file_unupscaled("upscaler is switched off for this run",
+                                STATUS_SKIPPED, prepared)
+
+    if is_already_high_resolution(upright):
+        return _file_unupscaled(
+            f"already {upright[0]}x{upright[1]}, above the "
+            f"{SKIP_ABOVE_WIDTH}x{SKIP_ABOVE_HEIGHT} threshold",
+            STATUS_SKIPPED, prepared)
 
     if not api_key:
-        return _file_unupscaled("GEMINI_API_KEY is not set", prepared)
+        return _file_unupscaled("GEMINI_API_KEY is not set", STATUS_FAILED, prepared)
 
     log(f"    Upscaling with {GEMINI_MODEL} at {IMAGE_QUALITY}, {aspect}…")
     upscaled = upscale_bytes(prepared, "image/jpeg", api_key, log, aspect)
 
     if not upscaled:
-        return _file_unupscaled(FAILURE_REASON, prepared)
+        return _file_unupscaled(FAILURE_REASON, STATUS_FAILED, prepared)
 
     target = _destination(UPSCALED_DIR)
     try:
@@ -350,10 +387,11 @@ def place_custom_poster(source_path: str, destination_root: str, quantity,
     except Exception as exc:        # noqa: BLE001
         if os.path.exists(target):
             os.remove(target)
-        return _file_unupscaled(f"{FAILURE_REASON} — could not save: {exc}", prepared)
+        return _file_unupscaled(f"{FAILURE_REASON} — could not save: {exc}",
+                                STATUS_FAILED, prepared)
 
     if os.path.exists(source_path):
         os.remove(source_path)
 
     log(f"    → {UPSCALED_DIR} at {target_size[0]}x{target_size[1]}")
-    return target, True
+    return target, STATUS_UPSCALED

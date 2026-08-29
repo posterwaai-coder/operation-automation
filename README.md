@@ -153,6 +153,83 @@ becomes annoying.
 If the ZIP is over Gmail's 25 MB attachment limit, the button says so — Gmail
 will offer to upload it to Drive and send a link instead.
 
+## Custom poster upscaling (Nano Banana Pro)
+
+Customer-supplied custom posters — the ones Shopify hosts on a URL in the line
+item's properties — are upscaled through Gemini before going into the output.
+Everything runs in the backend; nothing is exposed to the frontend.
+
+All of it lives in **`backend/custom_upscale.py`**. The fulfilment pipeline in
+`main.py` gained a single 20-line hook inside the custom-artwork branch and is
+otherwise untouched — regular SKUs, stickers, matching and the failsafe all
+behave exactly as before.
+
+### Setup
+
+Set one environment variable:
+
+```
+GEMINI_API_KEY='...'          # from https://aistudio.google.com/apikey
+# GEMINI_MODEL='gemini-3-pro-image-preview'   # optional override
+```
+
+No new pip packages. It uses `requests` and `Pillow`, both already in
+`requirements.txt`, so container start-up time is unchanged.
+
+### Generation settings
+
+| | |
+|---|---|
+| Model | `gemini-3-pro-image-preview` (Nano Banana Pro) |
+| Quality | `2K` |
+| Output size | 1742 × 2528 |
+| Aspect ratio sent | `2:3` |
+
+1742 × 2528 is a ratio of 0.689, which is **not** one of the API's supported
+aspect ratios (1:1, 3:2, 2:3, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9). 2:3
+(0.667) is the nearest — 3:4 (0.75) is much further off — so the image is
+generated at 2K/2:3 and then resized to exactly 1742 × 2528 with Pillow
+(LANCZOS, JPEG quality 95, no chroma subsampling).
+
+### Output folders
+
+```
+Upscaled framed Custom Posters/<N> copy/<name>.jpg     1742 × 2528
+Non-Upscaled Custom posters/<N> copy/<name>.jpg        original, untouched
+```
+
+The `N copy` subfolder is preserved inside both, so the quantity to print is
+still readable at a glance.
+
+### When upscaling fails
+
+Each poster gets **two attempts**. If the second also comes back without an
+image, the original is filed under `Non-Upscaled Custom posters/` and a row is
+written to `not_found.csv`:
+
+```
+Order ID,SKU,Quantity,Reason
+555,CUSTOMA4,3,Upscaling failed
+```
+
+So a failure is visible in both places — the error sheet and the folder
+structure.
+
+The poster is **never lost**. Every failure path — a refusal, an HTTP error, a
+quota block, a network drop, a missing `GEMINI_API_KEY`, an exception inside
+the module — ends with the original delivered into the Non-Upscaled folder.
+Without an API key the pipeline runs exactly as it did before this feature,
+with every custom poster landing there.
+
+### A note on the response parser
+
+`gemini-3-pro-image-preview` is preview-stage, and Google has already moved
+image generation between response shapes (the Interactions API's
+`output_image.data` and the older `candidates[].content.parts[].inlineData.data`).
+Rather than binding to one layout, `_extract_image_bytes` walks the response for
+the first plausible base64 image, so a wire-format change degrades to a retry
+instead of breaking every custom order.
+
 ## Failsafe: the ZIP survives a failed run
 
 The pipeline used to delete its temp directory whenever anything went wrong, so

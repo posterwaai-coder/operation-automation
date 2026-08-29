@@ -17,6 +17,7 @@ from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
 from sticker_processor import StickerProcessor
+import custom_upscale
 from sku_rules import (
     index_file,
     merge_indexes,
@@ -494,6 +495,25 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                     not_found.append((order_id, sku, quantity,
                                       f"custom artwork download failed: {exc}"))
                     log(f"  ⚠ Custom artwork download failed for {sku}: {exc}")
+                else:
+                    # Custom posters get upscaled and re-filed into their own
+                    # two folders; see custom_upscale.py. Everything about how
+                    # regular SKUs are handled is untouched.
+                    try:
+                        _, upscaled_ok = custom_upscale.place_custom_poster(
+                            source_path=dest_file,
+                            destination_root=destination,
+                            quantity=quantity,
+                            file_name=f"{filename}_{custom_count}.jpg",
+                            log=log,
+                        )
+                    except Exception as exc:    # noqa: BLE001
+                        # Upscaling must never cost us the poster itself.
+                        upscaled_ok = False
+                        log(f"  ⚠ Upscaling raised for {sku}: {exc}")
+                    if not upscaled_ok:
+                        not_found.append((order_id, sku, quantity,
+                                          custom_upscale.FAILURE_REASON))
 
             else:
                 not_found.append((order_id, sku, quantity,

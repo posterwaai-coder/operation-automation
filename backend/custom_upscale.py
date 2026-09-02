@@ -48,10 +48,21 @@ IMAGE_QUALITY = os.getenv("GEMINI_IMAGE_SIZE", "4K")
 # nearest. Generated at 2:3, then fitted to the canvas.
 GEMINI_ASPECT = "2:3"
 
-# Routing threshold. An image at or above this fraction of the canvas needs at
-# most a 1.54x enlargement, which Real-ESRGAN x2 handles locally for free;
-# anything smaller needs more reconstruction than that and goes to Gemini.
+# Routing band for the local upscaler.
+#
+# Below 65% the enlargement needed exceeds 1.54x, which a 2x model reconstructs
+# less convincingly than Gemini. Above 85% it needs less than 1.18x, where
+# LANCZOS is visually indistinguishable — and since inference time scales with
+# the SOURCE size, that upper slice was the most expensive and least useful
+# work in the whole pipeline. Capping it there removes the bulk of the compute
+# for no visible loss.
 ESRGAN_MIN_FRACTION = 0.65
+ESRGAN_MAX_FRACTION = 0.85
+
+# x2 passes allowed when recovering from a failed Gemini call. Artwork that
+# reaches Gemini is under 65%, so one pass may not span the canvas; two covers
+# anything from 25% up. Bounded because inference cost quadruples each pass.
+ESRGAN_MAX_PASSES = 2
 
 # Real-ESRGAN x2, run on CPU through ONNX Runtime. x2 is deliberate: nothing in
 # the 65-100% band needs more than 1.54x, and x4 would cost four times the
@@ -112,7 +123,7 @@ UPSCALE_PROMPT = (
     "graphics overlaid, no hallucinated details, no stylized or illustrated "
     "rendering.\n"
     "Output must read as a true-to-life, photorealistic upscale that matches "
-    "the reference exactly - only clearer, sharper, and higher resolution."
+    "the reference exactly \u2014 only clearer, sharper, and higher resolution."
 )
 
 
@@ -216,12 +227,12 @@ def choose_route(size) -> str:
     """
     Pick how a poster reaches the canvas, from its size alone.
 
-      >= 100%       already big enough — fit it, no AI
-      65% .. 100%   Real-ESRGAN x2 locally, free
-      < 65%         Gemini, which reconstructs far more than 1.54x well
+      >= 85%        fit only — under 1.18x, LANCZOS is indistinguishable
+      65% .. 85%    Real-ESRGAN x2 locally, free
+      < 65%         Gemini, which reconstructs beyond 1.54x far better
     """
     fraction = canvas_fraction(size)
-    if fraction >= 1.0:
+    if fraction >= ESRGAN_MAX_FRACTION:
         return "fit"
     if fraction >= ESRGAN_MIN_FRACTION:
         return "esrgan"
@@ -413,6 +424,22 @@ def upscale_bytes(image_bytes: bytes, mime_type: str, api_key: str, log=print,
     return None
 
 
+def esrgan_to_canvas(image: Image.Image, log=print) -> Image.Image:
+    """
+    Run x2 passes until the artwork spans the canvas, or the cap is reached.
+
+    One pass is enough for the 65-85% band. The Gemini fallback can start much
+    smaller, so a second pass is allowed there; beyond that the fit-to-canvas
+    LANCZOS step finishes the job, which is far cheaper than a third inference.
+    """
+    result = image
+    for _ in range(ESRGAN_MAX_PASSES):
+        if canvas_fraction(result.size) >= 1.0:
+            break
+        result = esrgan_upscale(result, log)
+    return result
+
+
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
 def _gemini_upscale(image: Image.Image, log=print):
@@ -502,7 +529,7 @@ def place_custom_poster(source_path: str, destination_root: str, quantity,
 
     if route == "esrgan":
         try:
-            enlarged = esrgan_upscale(image, log)
+            enlarged = esrgan_to_canvas(image, log)
             return _save(enlarged, UPSCALED_DIR, STATUS_UPSCALED, "Real-ESRGAN x2")
         except Exception as exc:        # noqa: BLE001
             # A local failure must never cost the poster; fall through to the
@@ -510,13 +537,24 @@ def place_custom_poster(source_path: str, destination_root: str, quantity,
             log(f"    ⚠ Real-ESRGAN failed: {exc}")
             return _save(image, NON_UPSCALED_DIR, STATUS_FAILED, FAILURE_REASON)
 
+    # Gemini route. Two attempts inside upscale_bytes; if both come back
+    # without an image, fall back to the local upscaler rather than shipping
+    # an un-enlarged poster — a quota block or a refusal on Google's side
+    # shouldn't decide the quality of the print.
     try:
         generated = _gemini_upscale(image, log)
     except Exception as exc:            # noqa: BLE001
         log(f"    ⚠ Gemini raised: {exc}")
         generated = None
 
-    if generated is None:
-        return _save(image, NON_UPSCALED_DIR, STATUS_FAILED, FAILURE_REASON)
+    if generated is not None:
+        return _save(generated, UPSCALED_DIR, STATUS_UPSCALED, f"Gemini {IMAGE_QUALITY}")
 
-    return _save(generated, UPSCALED_DIR, STATUS_UPSCALED, f"Gemini {IMAGE_QUALITY}")
+    log("    Gemini produced nothing after 2 attempts — falling back to Real-ESRGAN")
+    try:
+        enlarged = esrgan_to_canvas(image, log)
+        return _save(enlarged, UPSCALED_DIR, STATUS_UPSCALED,
+                     "Real-ESRGAN x2 after Gemini failed")
+    except Exception as exc:            # noqa: BLE001
+        log(f"    ⚠ Real-ESRGAN fallback also failed: {exc}")
+        return _save(image, NON_UPSCALED_DIR, STATUS_FAILED, FAILURE_REASON)

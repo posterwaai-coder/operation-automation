@@ -188,9 +188,13 @@ fraction = max(width / 3638, height / 5280)
 
 | Fraction | Route | Why |
 |---|---|---|
-| ≥ 100% | **fit only**, no AI | already fills the canvas |
-| 65% – 100% | **Real-ESRGAN x2**, local, free | needs at most 1.54× |
-| < 65% | **Gemini** | more reconstruction than a 2× model does well |
+| ≥ 85% | **fit only**, no AI | under 1.18×, LANCZOS is indistinguishable |
+| 65% – 85% | **Real-ESRGAN x2**, local, free | needs 1.18×–1.54× |
+| < 65% | **Gemini**, falling back to Real-ESRGAN | beyond 1.54×, a 2× model reconstructs less convincingly |
+
+The 85% ceiling matters for speed: inference time scales with the **source**
+size, so the 85–100% slice was the most expensive and least useful work in the
+pipeline — several minutes of compute for an enlargement approaching 1.0×.
 
 ### Real-ESRGAN
 
@@ -205,11 +209,9 @@ to one tile rather than the whole image — that is what makes a 19 MP poster
 survivable inside a container.
 
 **It is slow.** Measured at roughly 76k px/s on four threads of an M-series
-Mac, so a poster at the 65% boundary (8.1 MP) takes about 1.8 minutes, and one
-near 100% (19 MP) about 4 minutes. Railway's shared vCPUs will be slower.
-Note that value falls off towards the top of the band: artwork at 95% needs only
-a 1.05× enlargement, where plain LANCZOS is indistinguishable. Narrowing the
-band (`ESRGAN_MIN_FRACTION`, and an upper bound) is the lever if runs get long.
+Mac, so a poster in the 65–85% band (8.1–13.9 MP) takes about 1.8–3 minutes.
+Railway's shared vCPUs will be slower. `ESRGAN_MIN_FRACTION` and
+`ESRGAN_MAX_FRACTION` are the levers if runs get too long.
 
 `ESRGAN_THREADS` sets thread count, default 4.
 
@@ -221,7 +223,13 @@ was paid for. 4K is ~16.8 MP, a 1.09× finish. Gemini now only sees the worst
 inputs, where output quality matters most. Set `GEMINI_IMAGE_SIZE=2K` to halve
 the per-image cost at the expense of detail.
 
-Two attempts, then the framed original is delivered instead.
+Two attempts. If both come back without an image, the poster **falls back to
+Real-ESRGAN** rather than shipping un-enlarged — a quota block or a refusal on
+Google's side shouldn't decide print quality. Artwork reaching Gemini is under
+65%, so one x2 pass may not span the canvas; up to `ESRGAN_MAX_PASSES` (2) are
+allowed there, covering anything from 25% up, with the fit-to-canvas step
+finishing the rest. Only if that also fails does the framed original ship with
+`Upscaling failed` in the error sheet.
 
 ### Output folders
 

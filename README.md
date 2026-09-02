@@ -153,127 +153,92 @@ becomes annoying.
 If the ZIP is over Gmail's 25 MB attachment limit, the button says so — Gmail
 will offer to upload it to Drive and send a link instead.
 
-## Custom poster upscaling (Nano Banana Pro)
+## Custom poster upscaling
 
-Customer-supplied custom posters — the ones Shopify hosts on a URL in the line
-item's properties — are upscaled through Gemini before going into the output.
-Everything runs in the backend; nothing is exposed to the frontend.
+Customer-supplied custom posters are brought to a fixed print canvas. There is
+no switch — the route is decided from the artwork's size alone.
 
-All of it lives in **`backend/custom_upscale.py`**. The fulfilment pipeline in
-`main.py` gained a single 20-line hook inside the custom-artwork branch and is
-otherwise untouched — regular SKUs, stickers, matching and the failsafe all
-behave exactly as before.
+All of it lives in **`backend/custom_upscale.py`**; `main.py` calls it from one
+place inside the custom-artwork branch.
 
-### Switching it on
+### The canvas
 
-Upscaling is **off by default**. The UI has an **Upscale custom posters**
-tick-box under *Custom Posters*; nothing is sent to Gemini and nothing is
-billed unless it is ticked for that run. The setting is remembered between
-runs, and `POST /api/run` takes `use_upscaler` as a boolean.
+**308 × 447 mm at 300 DPI = 3638 × 5280 px.** Every custom poster is delivered
+at exactly this size. The artwork is fitted inside, never cropped, and never
+exceeds it.
 
-### Artwork that is already sharp enough
-
-Even with the box ticked, artwork already above **900 px wide or 1200 px tall**
-(measured after it has been stood upright) is left alone — upscaling it would
-add nothing and would still cost a call. This is deliberately an *or*: either
-dimension clearing its threshold counts as "already sharp enough", which errs
-towards skipping and so towards not spending on posters that do not need it.
-
-A skip is a normal outcome, not a problem, so it is **not** written to the
-error sheet. Only a genuine failure is. The three outcomes:
-
-| Outcome | Folder | Error sheet |
-|---|---|---|
-| Upscaled | `Upscaled framed Custom Posters/` | — |
-| Skipped (box unticked, or already high-res) | `Non-Upscaled Custom posters/` | — |
-| Failed (two attempts, or no API key while ticked) | `Non-Upscaled Custom posters/` | `Upscaling failed` |
-
-### Setup
-
-Set one environment variable:
-
-```
-GEMINI_API_KEY='...'          # from https://aistudio.google.com/apikey
-# GEMINI_MODEL='gemini-3-pro-image-preview'   # optional override
-```
-
-No new pip packages. It uses `requests` and `Pillow`, both already in
-`requirements.txt`, so container start-up time is unchanged.
-
-### Generation settings
-
-| | |
+| Source | Handling |
 |---|---|
-| Model | `gemini-3-pro-image-preview` (Nano Banana Pro) |
-| Quality | `2K` |
+| Portrait | fitted to the canvas |
+| Landscape | rotated 90° clockwise, then fitted |
+| Square | fitted to width, white space above and below |
 
-1742 × 2528 is a ratio of 0.689, which is **not** one of the API's supported
-aspect ratios (1:1, 3:2, 2:3, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9). 2:3
-(0.667) is the nearest — 3:4 (0.75) is much further off — so portrait images
-are generated at 2K/2:3 and then resized to the exact size with Pillow
-(LANCZOS, JPEG quality 95, no chroma subsampling).
+EXIF orientation is applied before any of this — a phone records a sideways
+photo plus a "rotate me" flag, so raw dimensions can read landscape when the
+image is really portrait.
 
-### Orientation
+### Routing
 
-Every custom poster leaves this module portrait or square — never landscape.
-Orientation is decided **before** the upscale, because it picks both the aspect
-ratio requested and the size finished at:
+`canvas_fraction()` is how much of the canvas the artwork fills once fitted,
+measured on whichever edge reaches the frame first:
 
-| Source shape | What happens | Aspect sent | Output size |
-|---|---|---|---|
-| Landscape | rotated 90° **clockwise** to stand upright | `2:3` | 1742 × 2528 |
-| Portrait | left as-is | `2:3` | 1742 × 2528 |
-| Square | ratio kept, never cropped or letterboxed | `1:1` | 2528 × 2528 |
+```
+fraction = max(width / 3638, height / 5280)
+```
 
-Clockwise means the original's left edge becomes the top.
+| Fraction | Route | Why |
+|---|---|---|
+| ≥ 100% | **fit only**, no AI | already fills the canvas |
+| 65% – 100% | **Real-ESRGAN x2**, local, free | needs at most 1.54× |
+| < 65% | **Gemini** | more reconstruction than a 2× model does well |
 
-EXIF orientation is baked in first. A phone camera records a sideways photo
-plus a "rotate me" flag, so raw pixel dimensions can read landscape when the
-image is really portrait — judging orientation before applying the flag would
-fire the rotation on the wrong images and leave them upside-down.
+### Real-ESRGAN
 
-The rotation is applied on the **failure path too**: a poster that couldn't be
-upscaled still arrives portrait in the Non-Upscaled folder, because an operator
-who wants upright output wants it either way.
+Runs on CPU through ONNX Runtime — no GPU, so it works in the container.
+Upscaling is x2 because nothing in the 65–100% band needs more, and x4 would
+cost four times the inference for detail discarded when fitting to the canvas.
+
+The 63 MB model is fetched once per container into a temp path (override with
+`ESRGAN_MODEL_URL` / `ESRGAN_MODEL_PATH`). Inference is tiled at 256 px with a
+16 px overlap that is trimmed afterwards, which keeps peak memory proportional
+to one tile rather than the whole image — that is what makes a 19 MP poster
+survivable inside a container.
+
+**It is slow.** Measured at roughly 76k px/s on four threads of an M-series
+Mac, so a poster at the 65% boundary (8.1 MP) takes about 1.8 minutes, and one
+near 100% (19 MP) about 4 minutes. Railway's shared vCPUs will be slower.
+Note that value falls off towards the top of the band: artwork at 95% needs only
+a 1.05× enlargement, where plain LANCZOS is indistinguishable. Narrowing the
+band (`ESRGAN_MIN_FRACTION`, and an upper bound) is the lever if runs get long.
+
+`ESRGAN_THREADS` sets thread count, default 4.
+
+### Gemini
+
+Runs at **4K**, not 2K. The canvas is 19.2 MP; Gemini's 2K output is ~4.2 MP,
+which would need a 2.2× interpolation afterwards and throw away most of what
+was paid for. 4K is ~16.8 MP, a 1.09× finish. Gemini now only sees the worst
+inputs, where output quality matters most. Set `GEMINI_IMAGE_SIZE=2K` to halve
+the per-image cost at the expense of detail.
+
+Two attempts, then the framed original is delivered instead.
 
 ### Output folders
 
-```
-Upscaled framed Custom Posters/<N> copy/<name>.jpg     1742 × 2528, or 2528 × 2528 if square
-Non-Upscaled Custom posters/<N> copy/<name>.jpg        original resolution, upright
-```
-
-The `N copy` subfolder is preserved inside both, so the quantity to print is
-still readable at a glance.
-
-### When upscaling fails
-
-Each poster gets **two attempts**. If the second also comes back without an
-image, the original is filed under `Non-Upscaled Custom posters/` and a row is
-written to `not_found.csv`:
+Custom posters carry the print size from their SKU, matching normal automation:
 
 ```
-Order ID,SKU,Quantity,Reason
-555,CUSTOMA4,3,Upscaling failed
+Upscaled framed Custom Posters/A4/2 copy/CUSTOM_1.jpg
+Non-Upscaled Custom posters/PP/3 copy/CUSTOM_2.jpg
 ```
 
-So a failure is visible in both places — the error sheet and the folder
-structure.
+`Non-Upscaled` means the AI step failed — the poster is still delivered, framed
+at full canvas size, and a row reading `Upscaling failed` goes to
+`not_found.csv`. A poster that simply did not need AI (≥100%) is *not* an error
+and lands in `Upscaled framed Custom Posters`.
 
-The poster is **never lost**. Every failure path — a refusal, an HTTP error, a
-quota block, a network drop, a missing `GEMINI_API_KEY`, an exception inside
-the module — ends with the original delivered into the Non-Upscaled folder.
-Without an API key the pipeline runs exactly as it did before this feature,
-with every custom poster landing there.
-
-### A note on the response parser
-
-`gemini-3-pro-image-preview` is preview-stage, and Google has already moved
-image generation between response shapes (the Interactions API's
-`output_image.data` and the older `candidates[].content.parts[].inlineData.data`).
-Rather than binding to one layout, `_extract_image_bytes` walks the response for
-the first plausible base64 image, so a wire-format change degrades to a retry
-instead of breaking every custom order.
+The poster is never lost: a failed Gemini call, a failed local inference, a
+missing API key or an unreadable download all still produce a framed file.
 
 ## Failsafe: the ZIP survives a failed run
 

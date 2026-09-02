@@ -35,3 +35,4 @@ pyinstaller==6.11.1
 pillow==11.1.0
 opencv-python-headless
 numpy==2.2.2
+onnxruntime

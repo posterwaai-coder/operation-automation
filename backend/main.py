@@ -365,7 +365,7 @@ def process_sticker_folders(input_dir: Path, output_dir: Path) -> None:
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def run_script(source_folder_ids, recipient_email: str, cc_email: str,
-               log=print, on_zip_ready=None, use_upscaler: bool = False) -> str:
+               log=print, on_zip_ready=None) -> str:
     """
     Run the full fulfilment pipeline.
 
@@ -379,9 +379,6 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
     cc_email         : Optional CC email.
     log              : Callable used for progress messages (default: print).
                        api.py passes _append_log so messages appear in the UI.
-    use_upscaler     : Whether to run custom posters through Gemini. Off by
-                       default, so upscaling only happens when it was asked
-                       for. See custom_upscale.py.
     on_zip_ready     : Optional callback invoked with the ZIP path as soon as
                        the archive exists, before the upload and email steps.
                        api.py uses it to arm the download button early, so the
@@ -441,8 +438,6 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
 
         # ── Step 3: sort SKUs and download only what's needed ────────────────
         log("Sorting SKUs and downloading required artwork files…")
-        if use_upscaler:
-            log("Custom-poster upscaling is ON for this run.")
 
         for order_id, sku, quantity, properties in unfulfilled_skus:
             if sku is None:
@@ -511,7 +506,7 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                             quantity=quantity,
                             file_name=f"{filename}_{custom_count}.jpg",
                             log=log,
-                            enabled=use_upscaler,
+                            size_folder=folder_name,
                         )
                     except Exception as exc:    # noqa: BLE001
                         # Upscaling must never cost us the poster itself.

@@ -77,7 +77,7 @@ def get_settings():
 def post_settings():
     body = request.get_json(force=True)
     allowed = {"source_folder_id", "source_folder_id_2", "recipient_email",
-               "cc_email", "use_upscaler"}
+               "cc_email"}
     cfg = load_config()
     cfg.update({k: v for k, v in body.items() if k in allowed})
     save_config(cfg)
@@ -111,7 +111,6 @@ def post_run():
     source_folder_id_2 = body.get("source_folder_id_2", "").strip()
     recipient_email    = body.get("recipient_email",    "").strip()
     cc_email           = body.get("cc_email",           "").strip()
-    use_upscaler       = bool(body.get("use_upscaler", False))
 
     missing = [f for f, v in [
         ("source_folder_id", source_folder_id),
@@ -134,7 +133,6 @@ def post_run():
         "source_folder_id_2": source_folder_id_2,
         "recipient_email":    recipient_email,
         "cc_email":           cc_email,
-        "use_upscaler":       use_upscaler,
     })
 
     _run_state.update({
@@ -162,7 +160,6 @@ def post_run():
                 cc_email=cc_email,
                 log=_append_log,
                 on_zip_ready=_record_zip,
-                use_upscaler=use_upscaler,
             )
             if zip_path:
                 _record_zip(zip_path)

@@ -80,6 +80,8 @@ ESRGAN_MODEL_PATH = os.getenv(
 )
 ESRGAN_SCALE = 2
 ESRGAN_TILE = 256          # measured sweet spot: throughput plateaus here
+# The network pixel-shuffles by 2, so every tile it sees must have even sides.
+ESRGAN_SIZE_MULTIPLE = 2
 ESRGAN_OVERLAP = 16        # trimmed after inference, so tile seams don't show
 ESRGAN_THREADS = int(os.getenv("ESRGAN_THREADS", "4"))
 
@@ -343,8 +345,24 @@ def esrgan_upscale(image: Image.Image, log=print) -> Image.Image:
             y1 = min(height, top + ESRGAN_TILE + ESRGAN_OVERLAP)
             x1 = min(width, left + ESRGAN_TILE + ESRGAN_OVERLAP)
 
-            patch = source[y0:y1, x0:x1].transpose(2, 0, 1)[None]
-            result = session.run(None, {input_name: patch})[0][0].transpose(1, 2, 0)
+            patch = source[y0:y1, x0:x1]
+
+            # The network pixel-shuffles by 2, so it rejects an odd-sided
+            # tile outright ("cannot be reshaped"). Edge tiles inherit the
+            # image's own parity, so any poster with an odd width or height
+            # had its last row and column fail. Pad by edge replication —
+            # zeros would darken the border — and trim the result back.
+            pad_h = patch.shape[0] % ESRGAN_SIZE_MULTIPLE
+            pad_w = patch.shape[1] % ESRGAN_SIZE_MULTIPLE
+            if pad_h or pad_w:
+                patch = np.pad(patch, ((0, pad_h), (0, pad_w), (0, 0)), mode="edge")
+
+            tensor = patch.transpose(2, 0, 1)[None]
+            result = session.run(None, {input_name: tensor})[0][0].transpose(1, 2, 0)
+
+            if pad_h or pad_w:
+                result = result[:result.shape[0] - pad_h * scale,
+                                :result.shape[1] - pad_w * scale]
 
             # Trim the overlap back off, and clip to the image edge.
             bottom = min(top + ESRGAN_TILE, height)
@@ -445,7 +463,11 @@ def esrgan_to_canvas(image: Image.Image, log=print) -> Image.Image:
     """
     result = image
     for _ in range(ESRGAN_MAX_PASSES):
-        if canvas_fraction(result.size) >= 1.0:
+        # Stop as soon as the remaining gap is one LANCZOS step — the same
+        # 85% reasoning the router uses. Running a further doubling from
+        # there costs four times the pixels to produce something that is
+        # then scaled straight back down.
+        if canvas_fraction(result.size) >= ESRGAN_MAX_FRACTION:
             break
         result = esrgan_upscale(result, log)
     return result

@@ -186,15 +186,23 @@ measured on whichever edge reaches the frame first:
 fraction = max(width / 3638, height / 5280)
 ```
 
-| Fraction | Route | Why |
+| Fraction | Print size | Route |
 |---|---|---|
-| ≥ 85% | **fit only**, no AI | under 1.18×, LANCZOS is indistinguishable |
-| 65% – 85% | **Real-ESRGAN x2**, local, free | needs 1.18×–1.54× |
-| < 65% | **Gemini**, falling back to Real-ESRGAN | beyond 1.54×, a 2× model reconstructs less convincingly |
+| ≥ 85% | any | **fit only**, no AI |
+| 15% – 85% | any | **Real-ESRGAN x2**, local, free |
+| < 15% | **A3** | **Gemini**, falling back to Real-ESRGAN |
+| < 15% | A4 / A5 / PP / none | **Real-ESRGAN x2** |
 
-The 85% ceiling matters for speed: inference time scales with the **source**
-size, so the 85–100% slice was the most expensive and least useful work in the
-pipeline — several minutes of compute for an enlargement approaching 1.0×.
+Two things keep the bill down. The 85% ceiling: inference time scales with the
+**source** size, so the 85–100% slice was the most expensive and least useful
+work in the pipeline — minutes of compute for an enlargement approaching 1.0×.
+And the A3 gate: below 15% the local upscaler has a lot of ground to make up,
+which is worth paying Gemini for on the largest sheet in the range, where a
+weak source shows most. On A4 and smaller it is not, so those stay local and
+free.
+
+In practice Gemini now fires on one case only — a custom A3 order whose
+artwork is under 15% of the canvas.
 
 ### Real-ESRGAN
 
@@ -208,8 +216,10 @@ The 63 MB model is fetched once per container into a temp path (override with
 to one tile rather than the whole image — that is what makes a 19 MP poster
 survivable inside a container.
 
-**It is slow.** Measured at roughly 76k px/s on four threads of an M-series
-Mac, so a poster in the 65–85% band (8.1–13.9 MP) takes about 1.8–3 minutes.
+**It is slow at the top of the band.** Measured at roughly 76k px/s on four
+threads of an M-series Mac: a poster near 85% (13.9 MP) takes about 3 minutes,
+one at 50% (4.8 MP) about a minute, and small artwork down near 15% runs in
+seconds even across three passes, because each pass starts from very little.
 Railway's shared vCPUs will be slower. `ESRGAN_MIN_FRACTION` and
 `ESRGAN_MAX_FRACTION` are the levers if runs get too long.
 
@@ -225,10 +235,9 @@ the per-image cost at the expense of detail.
 
 Two attempts. If both come back without an image, the poster **falls back to
 Real-ESRGAN** rather than shipping un-enlarged — a quota block or a refusal on
-Google's side shouldn't decide print quality. Artwork reaching Gemini is under
-65%, so one x2 pass may not span the canvas; up to `ESRGAN_MAX_PASSES` (2) are
-allowed there, covering anything from 25% up, with the fit-to-canvas step
-finishing the rest. Only if that also fails does the framed original ship with
+Google's side shouldn't decide print quality. Artwork routed locally from below the band can
+need several doublings, so up to `ESRGAN_MAX_PASSES` (3) are allowed, covering
+anything from about 12% up, with the fit-to-canvas step finishing the rest. Only if that also fails does the framed original ship with
 `Upscaling failed` in the error sheet.
 
 ### Output folders

@@ -50,19 +50,23 @@ GEMINI_ASPECT = "2:3"
 
 # Routing band for the local upscaler.
 #
-# Below 65% the enlargement needed exceeds 1.54x, which a 2x model reconstructs
-# less convincingly than Gemini. Above 85% it needs less than 1.18x, where
-# LANCZOS is visually indistinguishable — and since inference time scales with
-# the SOURCE size, that upper slice was the most expensive and least useful
-# work in the whole pipeline. Capping it there removes the bulk of the compute
-# for no visible loss.
-ESRGAN_MIN_FRACTION = 0.65
+# Above 85% the enlargement needed is under 1.18x, where LANCZOS is visually
+# indistinguishable — and since inference time scales with the SOURCE size,
+# that upper slice was the most expensive and least useful work in the
+# pipeline. Below 15% even repeated x2 passes leave a large gap to close.
+ESRGAN_MIN_FRACTION = 0.15
 ESRGAN_MAX_FRACTION = 0.85
 
-# x2 passes allowed when recovering from a failed Gemini call. Artwork that
-# reaches Gemini is under 65%, so one pass may not span the canvas; two covers
-# anything from 25% up. Bounded because inference cost quadruples each pass.
-ESRGAN_MAX_PASSES = 2
+# Print sizes whose custom posters are worth paying Gemini for when they fall
+# below the local band. A3 is the largest sheet in the range, so a weak source
+# shows most there; every other size is served by the local upscaler.
+GEMINI_PRINT_SIZES = ("A3",)
+
+# x2 passes allowed before the fit-to-canvas step finishes the job. Three
+# covers artwork from about 12% of the canvas upward. Each pass quadruples the
+# pixels the next one must process, so this stays bounded — but the inputs
+# down here are small, so the passes themselves are cheap.
+ESRGAN_MAX_PASSES = 3
 
 # Real-ESRGAN x2, run on CPU through ONNX Runtime. x2 is deliberate: nothing in
 # the 65-100% band needs more than 1.54x, and x4 would cost four times the
@@ -223,20 +227,27 @@ def canvas_fraction(size) -> float:
     return max(width / TARGET_SIZE[0], height / TARGET_SIZE[1])
 
 
-def choose_route(size) -> str:
+def choose_route(size, size_folder: str = "") -> str:
     """
-    Pick how a poster reaches the canvas, from its size alone.
+    Pick how a poster reaches the canvas, from its size and print size.
 
       >= 85%        fit only — under 1.18x, LANCZOS is indistinguishable
-      65% .. 85%    Real-ESRGAN x2 locally, free
-      < 65%         Gemini, which reconstructs beyond 1.54x far better
+      15% .. 85%    Real-ESRGAN x2 locally, free
+      < 15%         Gemini, but only for the print sizes worth paying for;
+                    everything else still goes to the local upscaler
+
+    Gating the paid route on print size is what keeps the bill down: a weak
+    source is most visible on the largest sheet, so A3 is worth the call and
+    the smaller sizes are not.
     """
     fraction = canvas_fraction(size)
     if fraction >= ESRGAN_MAX_FRACTION:
         return "fit"
     if fraction >= ESRGAN_MIN_FRACTION:
         return "esrgan"
-    return "gemini"
+    if (size_folder or "").strip().upper() in GEMINI_PRINT_SIZES:
+        return "gemini"
+    return "esrgan"
 
 
 def frame_to_canvas(image: Image.Image) -> Image.Image:
@@ -520,8 +531,8 @@ def place_custom_poster(source_path: str, destination_root: str, quantity,
         return _rescue(f"could not read the download: {exc}")
 
     fraction = canvas_fraction(image.size)
-    route = choose_route(image.size)
-    log(f"    {note}, {fraction:.0%} of canvas → {route}")
+    route = choose_route(image.size, size_folder)
+    log(f"    {note}, {fraction:.0%} of canvas, {size_folder or 'no size'} → {route}")
 
     if route == "fit":
         return _save(image, UPSCALED_DIR, STATUS_SKIPPED,

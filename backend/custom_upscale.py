@@ -33,6 +33,27 @@ from PIL import Image, ImageOps
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-pro-image-preview")
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
+# ── Upscaling switch ─────────────────────────────────────────────────────────
+#
+# PARKED. CPU inference was costing minutes per poster, which made a batch with
+# many custom orders unworkable. Custom posters are still stood upright and
+# framed to the print canvas — only the AI step is skipped, and they all land in
+# one folder rather than being split by whether it succeeded.
+#
+# Everything below (routing, Real-ESRGAN, Gemini) is left intact and simply
+# unreached, so this is one switch to reverse rather than a rewrite:
+#
+#     UPSCALING_ENABLED=1        in the environment, or flip the default here
+#
+UPSCALING_ENABLED = os.getenv("UPSCALING_ENABLED", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+# Where custom posters go while upscaling is parked. One bin: with no AI step
+# there is nothing to sort them by, and UPSCALED_DIR / NON_UPSCALED_DIR would
+# both be misleading.
+CUSTOM_DIR = "Custom Posters"
+
 # Final canvas: 308 x 447 mm at 300 DPI. Every custom poster is delivered at
 # exactly this size — the image is fitted inside, the canvas never changes.
 TARGET_SIZE = (3638, 5280)
@@ -553,6 +574,14 @@ def place_custom_poster(source_path: str, destination_root: str, quantity,
         return _rescue(f"could not read the download: {exc}")
 
     fraction = canvas_fraction(image.size)
+
+    if not UPSCALING_ENABLED:
+        # Framing only. Orientation, canvas and folder layout are unchanged;
+        # the poster simply never reaches the AI step.
+        log(f"    {note}, {fraction:.0%} of canvas, {size_folder or 'no size'}")
+        return _save(image, CUSTOM_DIR, STATUS_SKIPPED,
+                     "framed, upscaling parked")
+
     route = choose_route(image.size, size_folder)
     log(f"    {note}, {fraction:.0%} of canvas, {size_folder or 'no size'} → {route}")
 

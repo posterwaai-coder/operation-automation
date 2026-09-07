@@ -151,24 +151,17 @@
   .open-btn.visible { display: block; }
   .open-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(90,255,202,.25); }
 
-  .mail-btn {
-    display: none; width: 100%; margin-top: 10px; padding: 13px 24px;
-    background: transparent; color: var(--accent); border: 1px solid var(--accent);
-    border-radius: var(--radius);
-    font-family: var(--display); font-weight: 700; font-size: 14px; letter-spacing: .03em;
-    cursor: pointer; transition: background var(--transition), color var(--transition);
+  .input-row { display: flex; gap: 0; }
+  .input-row input { border-radius: var(--radius) 0 0 var(--radius); }
+  .browse-btn {
+    background: var(--border); border: 1px solid var(--border); border-left: none;
+    border-radius: 0 var(--radius) var(--radius) 0; color: var(--text);
+    padding: 0 16px; cursor: pointer; font-family: var(--mono); font-size: 12px;
+    white-space: nowrap; transition: background var(--transition);
   }
-  .mail-btn.visible { display: block; }
-  .mail-btn:hover { background: var(--accent); color: #0b0c0f; }
+  .browse-btn:hover { background: #2a2d38; }
+  .browse-btn:disabled { opacity: .35; cursor: not-allowed; }
 
-  .mail-hint {
-    display: none; margin-top: 10px; padding: 12px 14px;
-    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
-    font-size: 11px; line-height: 1.75; color: var(--text-dim);
-  }
-  .mail-hint.visible { display: block; }
-  .mail-hint b { color: var(--text); font-weight: 500; }
-  .mail-hint .warn { color: var(--danger); }
 
   .save-row { display: flex; justify-content: flex-end; margin-top: -8px; margin-bottom: 12px; }
   .save-indicator {
@@ -204,7 +197,7 @@
     <div class="field-group">
       <div class="field">
         <label for="source_folder">Artwork Folder</label>
-        <input type="text" id="source_folder" placeholder="/Users/you/Artwork/all_in_one" autocomplete="off" spellcheck="false" />
+        <div class="input-row"><input type="text" id="source_folder" placeholder="C:\\Artwork\\all_in_one" autocomplete="off" spellcheck="false" /><button class="browse-btn" onclick="browse('source_folder')">Browse…</button></div>
         <span class="path-note">
           Absolute path to the folder holding every artwork file. Subfolders are searched too,
           so the existing category/product structure works as-is.
@@ -220,33 +213,13 @@
     <div class="field-group">
       <div class="field">
         <label for="output_folder">Destination Folder</label>
-        <input type="text" id="output_folder" placeholder="/Users/you/Desktop/Orders" autocomplete="off" spellcheck="false" />
+        <div class="input-row"><input type="text" id="output_folder" placeholder="C:\\Users\\you\\Downloads" autocomplete="off" spellcheck="false" /><button class="browse-btn" onclick="browse('output_folder')">Browse…</button></div>
         <span class="path-note">
           Each run creates a dated folder inside this one, e.g. <code>21082026onlineorder</code>,
           holding A3 / A4 / A5 / PP / stickers and <code>not_found.csv</code>.
           A second run on the same day gets a <code>_2</code> suffix instead of overwriting the first.
         </span>
         <span class="path-status" id="output_folder_status"></span>
-      </div>
-    </div>
-
-    <div class="divider"></div>
-
-    <!-- Email -->
-    <div class="section-label">Email <span style="text-transform:none;letter-spacing:0;color:var(--muted)">(optional)</span></div>
-    <div class="field-group">
-      <div class="field">
-        <label for="recipient_email">Recipient</label>
-        <input type="text" id="recipient_email" placeholder="team@posterwa.com" autocomplete="off" spellcheck="false" />
-        <span class="path-note">
-          Fill this in and the run also produces a <code>.zip</code> next to the output folder,
-          plus a button that opens a pre-written Gmail draft. Leave it empty and nothing changes —
-          no ZIP, no email step.
-        </span>
-      </div>
-      <div class="field">
-        <label for="cc_email">CC</label>
-        <input type="text" id="cc_email" placeholder="manager@posterwa.com" autocomplete="off" spellcheck="false" />
       </div>
     </div>
 
@@ -266,8 +239,6 @@
       </span>
     </div>
     <button class="open-btn" id="open-btn" onclick="openOutput()">Open Output Folder</button>
-    <button class="mail-btn" id="mail-btn" onclick="composeEmail()">Compose Email in Gmail</button>
-    <div class="mail-hint" id="mail-hint"></div>
 
     <div class="banner error" id="banner-error">
       <span>✕</span>
@@ -282,9 +253,8 @@
 <script>
 // ── Config ───────────────────────────────────────────────────────────────────
 const API = '/api';
-const PATH_FIELDS  = ['source_folder', 'output_folder'];
-const EMAIL_FIELDS = ['recipient_email', 'cc_email'];
-const FIELDS       = [...PATH_FIELDS, ...EMAIL_FIELDS];
+const PATH_FIELDS = ['source_folder', 'output_folder'];
+const FIELDS      = PATH_FIELDS;
 
 const $ = (id) => document.getElementById(id);
 
@@ -292,7 +262,6 @@ let pollTimer  = null;
 let saveTimer  = null;
 let checkTimers = {};
 let isRunning  = false;
-let zipReady   = false;
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 async function loadSettings() {
@@ -388,8 +357,6 @@ function hideResults() {
   $('banner-success').classList.remove('visible');
   $('banner-error').classList.remove('visible');
   $('open-btn').classList.remove('visible');
-  $('mail-btn').classList.remove('visible');
-  $('mail-hint').classList.remove('visible');
 }
 
 function showSuccess(path) {
@@ -421,7 +388,6 @@ async function handleRun() {
   }
 
   hideResults();
-  zipReady = false;
   setRunning(true);
   renderLog(['Starting…']);
 
@@ -452,13 +418,11 @@ function startPolling() {
     try {
       const s = await (await fetch(`${API}/status`)).json();
       if (s.log.length !== seen) { renderLog(s.log); seen = s.log.length; }
-      zipReady = !!s.zip_ready;
       if (!s.running) {
         clearInterval(pollTimer);
         setRunning(false);
         if (s.error)     showError(s.error);
         else if (s.done) showSuccess(s.output_path);
-        if (zipReady) $('mail-btn').classList.add('visible');
       }
     } catch (_) {}
   }, 800);
@@ -476,26 +440,25 @@ async function openOutput() {
   }
 }
 
-async function composeEmail() {
+async function browse(field) {
+  const btn = event && event.target;
+  if (btn) { btn.disabled = true; btn.textContent = 'Choose…'; }
   try {
-    const r = await fetch(`${API}/compose-email`, { method: 'POST' });
+    const r = await fetch(`${API}/browse`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current: $(field).value.trim() }),
+    });
     const d = await r.json();
-    if (!r.ok) { showError(d.error ?? 'Could not open the mail draft.'); return; }
-
-    const hint = $('mail-hint');
-    hint.innerHTML =
-      `<b>Gmail is open with the draft written.</b><br>` +
-      `${d.zip_name} (${d.size_mb} MB) is selected in your file manager — ` +
-      `drag it onto the compose window to attach it, then send.` +
-      (d.path_copied ? `<br>Its path is also on your clipboard.` : ``) +
-      (d.too_large
-        ? `<br><span class="warn">⚠ ${d.size_mb} MB is over Gmail's ` +
-          `${d.gmail_attach_limit_mb} MB attachment limit — Gmail will offer ` +
-          `to send it as a Drive link instead.</span>`
-        : ``);
-    hint.classList.add('visible');
+    if (d.ok && d.path) {
+      $(field).value = d.path;
+      scheduleSave();
+      checkPath(field);
+    }
   } catch (_) {
-    showError('Could not open the mail draft.');
+    showError('Could not open the folder chooser. Type the path instead.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Browse…'; }
   }
 }
 

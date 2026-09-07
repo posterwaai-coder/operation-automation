@@ -27,6 +27,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from sticker_processor import StickerProcessor
+import custom_upscale
 
 # script.py reads TOKEN/MERCHANT at import time, so the .env next to this repo
 # has to be on the environment before it is imported — see _load_shopify().
@@ -332,6 +333,26 @@ def run_offline(source_folder: str, output_folder: str, log=print,
                         os.remove(dest_file)
                     not_found.append((order_id, sku, quantity, f"custom artwork download failed: {exc}"))
                     log(f"  ⚠ Custom artwork download failed for {sku}: {exc}")
+                else:
+                    # Custom posters are brought to the print canvas and re-filed
+                    # into their own two folders — identical logic to the online
+                    # build, since both import the same module.
+                    try:
+                        _, upscale_status = custom_upscale.place_custom_poster(
+                            source_path=dest_file,
+                            destination_root=staging_dir,
+                            quantity=quantity,
+                            file_name=f"{filename}_{custom_count}.jpg",
+                            log=log,
+                            size_folder=folder_name,
+                        )
+                    except Exception as exc:    # noqa: BLE001
+                        # Upscaling must never cost us the poster itself.
+                        upscale_status = custom_upscale.STATUS_FAILED
+                        log(f"  ⚠ Upscaling raised for {sku}: {exc}")
+                    if upscale_status == custom_upscale.STATUS_FAILED:
+                        not_found.append((order_id, sku, quantity,
+                                          custom_upscale.FAILURE_REASON))
 
             else:
                 not_found.append((order_id, sku, quantity, "no matching file in artwork folder"))

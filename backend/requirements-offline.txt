@@ -1,6 +1,7 @@
 # Dependencies for the OFFLINE build (offline_api.py / offline_main.py).
-# Drops google-api-python-client, google-auth*, resend and flask-cors — the
-# offline pipeline talks to Shopify and the local filesystem, nothing else.
+# Drops google-api-python-client, google-auth* and flask-cors — the offline
+# pipeline talks to Shopify, the local filesystem, and (for custom posters)
+# Gemini. onnxruntime powers the local Real-ESRGAN upscaler.
 
 Flask
 python-dotenv
@@ -9,3 +10,4 @@ requests
 pillow
 numpy
 opencv-python-headless
+onnxruntime

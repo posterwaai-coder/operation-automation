@@ -43,25 +43,35 @@ Create a `.env` file in the repo root. Include the Shopify/email settings plus t
 Drive credentials for whichever option you chose above:
 
 ```
-# Shopify
-TOKEN='shopify-app-api'
+# ---- Shopify (required, both builds) --------------------------------------
+TOKEN='shpat_...'
 MERCHANT='merchant-name'
 
-# Email — Gmail SMTP
-SENDER_EMAIL='ops@yourdomain.com'
-SENDER_PASSWORD='abcd efgh ijkl mnop'   # Google APP password, not the mailbox password
-# SMTP_HOST='smtp.gmail.com'            # optional override
-# SMTP_PORT='587'                       # optional; 465 switches to implicit SSL
-
-# Google Drive — Option A (service account)
+# ---- Google Drive (online build only) -------------------------------------
+# Option A, preferred: service account
 GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account", ...}'
-
-# Google Drive — Option B (OAuth), instead of Option A
+# Option B: OAuth user credentials, instead of Option A
 GOOGLE_OAUTH_CLIENT_ID='...'
 GOOGLE_OAUTH_CLIENT_SECRET='...'
 GOOGLE_OAUTH_REFRESH_TOKEN='...'
-```
 
+# ---- Frontend origins (online build only) ---------------------------------
+# Comma-separated. Without it, only localhost and the original Vercel URL.
+ALLOWED_ORIGINS='https://your-site.vercel.app,http://localhost:5173'
+
+# ---- Email (online build only, blocked on Railway) ------------------------
+SENDER_EMAIL='ops@yourdomain.com'
+SENDER_PASSWORD='abcd efgh ijkl mnop'   # Google APP password
+# SMTP_HOST='smtp.gmail.com'
+# SMTP_PORT='587'                       # 465 switches to implicit SSL
+
+# ---- Custom posters (both builds, all optional) ---------------------------
+UPSCALING_ENABLED=''        # '1' to un-park the AI step; off by default
+GEMINI_API_KEY=''           # only used when upscaling is enabled
+# GEMINI_MODEL='gemini-3-pro-image-preview'
+# GEMINI_IMAGE_SIZE='4K'    # '2K' halves the cost, at the expense of detail
+# ESRGAN_THREADS='4'        # local upscaler threads
+```
 
 Instructions to run the app:
 
@@ -106,60 +116,116 @@ Build executable
 Railway blocks outbound SMTP — ports 25, 465 and 587 are null-routed to stop
 spam abuse. A send from the deployed backend fails with
 `[Errno 101] Network is unreachable` no matter how the credentials are set up,
-because the connection never leaves the container. This is almost certainly why
-the project used an HTTP email API originally.
+because the connection never leaves the container.
 
-The SMTP code in `main.py` is still there and works fine anywhere that permits
-port 587 (a laptop, a VPS, most office networks). It is simply unreachable from
-Railway. It needs `SENDER_EMAIL` and `SENDER_PASSWORD`, where the password must
-be a **Google app password** from <https://myaccount.google.com/apppasswords>
-with 2-Step Verification on — Google stopped accepting mailbox passwords for
-SMTP in May 2022. `SMTP_HOST` / `SMTP_PORT` can point it elsewhere; 465 uses
-implicit SSL, anything else STARTTLS.
+The SMTP code in `main.py` still works anywhere port 587 is open (a laptop, a
+VPS, most office networks) — it is simply unreachable from Railway. It needs
+`SENDER_EMAIL` and `SENDER_PASSWORD`, where the password must be a **Google app
+password** from <https://myaccount.google.com/apppasswords> with 2-Step
+Verification on; Google stopped accepting mailbox passwords for SMTP in May
+2022. `SMTP_HOST` / `SMTP_PORT` can point it elsewhere; 465 uses implicit SSL,
+anything else STARTTLS.
 
 An email failure never fails a run — see the failsafe table below.
 
-### Sending from the offline build instead
+**The offline build does not send email at all.** Its output is a folder on
+disk; there is nothing to deliver.
 
-The offline build sidesteps the block entirely by keeping a human in the loop:
-it writes the folder locally, zips it, and opens a pre-written Gmail draft in
-the browser.
+## Online build
 
-Fill in **Recipient** (and optionally **CC**) before running. That, and only
-that, turns on two extra things:
+The backend runs on Railway and auto-deploys from `main`. The frontend is a
+Vite app in `frontend/`, deployed separately on Vercel with **Root Directory**
+set to `frontend` and `VITE_API_URL` pointing at the Railway service.
 
- a. a `.zip` of the run folder, written next to it — a mail draft can only
-    carry a file, not a directory <br>
- b. a **Compose Email in Gmail** button once the run finishes <br>
+### Two Drive source folders
 
-Leave Recipient empty and the run behaves exactly as before: folder only, no
-ZIP, no email step.
+Artwork is split across more than one Drive folder, so the online build takes
+two. **Artwork Folder 1** is required; **Artwork Folder 2** is optional — leave
+it empty and the run behaves exactly as it did with one folder.
 
-Pressing the button does three things at once:
+Both are walked recursively, subfolders included, and merged into a single
+lookup. **If the same SKU exists in both, Folder 1 wins.** The order is the
+rule, so the same run always picks the same file — with an unordered merge the
+winner would come down to whichever folder the Drive API happened to paginate
+first, which is not something an operator can reason about or rely on.
 
- a. opens Gmail compose with recipient, CC, subject and body already written <br>
- b. reveals the `.zip` in Finder/Explorer with the file already selected <br>
- c. copies the `.zip`'s full path to the clipboard as a backup <br>
+Either field accepts a bare ID or a full `drive.google.com/drive/folders/…`
+URL; the ID is extracted automatically.
 
-**You still drag the file into the compose window yourself.** That step cannot
-be automated: a web page has no way to be handed a local file except by the
-person using it, which is a browser sandbox rule rather than a missing feature.
-`mailto:` links can't carry attachments either — RFC 6068 forbids the `attach`
-header and every modern client ignores it, because it was abused to deliver
-malware. Driving a desktop client (Apple Mail via AppleScript, Outlook via COM)
-*can* attach for real; that is a different option if the browser step ever
-becomes annoying.
+The log reports each folder separately, so it's obvious when one of them is
+returning nothing:
 
-If the ZIP is over Gmail's 25 MB attachment limit, the button says so — Gmail
-will offer to upload it to Drive and send a link instead.
+```
+Indexing 2 artwork source folders on Google Drive…
+  Folder 1: 4812 lookup key(s) from 1a2B3c…
+  Folder 2: 1190 lookup key(s) from 9zY8x7…
+Indexed 5794 lookup key(s) across 2 folders.
+```
+
+A folder that can't be read fails the run immediately, before anything is
+downloaded, naming which of the two it was — the usual cause is a wrong ID or a
+folder that was never shared with the service account.
+
+### Allowed browser origins
+
+The API only answers browsers whose origin it recognises. `ALLOWED_ORIGINS` is
+a comma-separated list read from the environment:
+
+```
+ALLOWED_ORIGINS='https://your-site.vercel.app,http://localhost:5173'
+```
+
+It is an environment variable rather than a constant because the frontend URL
+is a deployment detail — it should not take a code release to move the site.
+Unset, it falls back to localhost plus the original Vercel URL.
+
+Vercel gives every deployment its own hostname
+(`project-abc123-team.vercel.app`), so an allowed `*.vercel.app` entry also
+admits that project's preview builds. Pinning only the production URL blocks
+every preview for no visible reason.
+
+`GET /api/health` reports the list currently in force — the quickest way to
+tell whether a new frontend URL has actually been configured:
+
+```json
+{"ok": true, "allowed_origins": ["https://your-site.vercel.app", "..."]}
+```
+
+If the site loads but every request fails, this is almost always why.
 
 ## Custom poster upscaling
 
-Customer-supplied custom posters are brought to a fixed print canvas. There is
-no switch — the route is decided from the artwork's size alone.
+> **Status: parked.** CPU inference was costing minutes per poster, which made
+> a batch with many custom orders unworkable. Custom posters are still stood
+> upright and framed to the print canvas — only the AI step is skipped.
+>
+> The routing, Real-ESRGAN and Gemini code below is intact and simply
+> unreached. To bring it back:
+>
+> ```
+> UPSCALING_ENABLED=1
+> ```
+>
+> set in the environment, or flip the default in `custom_upscale.py`. The rest
+> of this section describes what happens when it is switched on.
 
-All of it lives in **`backend/custom_upscale.py`**; `main.py` calls it from one
-place inside the custom-artwork branch.
+Customer-supplied custom posters — the ones Shopify hosts on a URL in the line
+item's properties — are brought to a fixed print canvas. All of it lives in
+**`backend/custom_upscale.py`**; both pipelines import the same module.
+
+### While parked
+
+Every custom poster is stood upright, framed to 3638 × 5280, and filed in a
+single folder:
+
+```
+Custom Posters/A3/1 copy/CUSTOM_1.jpg
+Custom Posters/A4/2 copy/CUSTOM_2.jpg
+```
+
+One bin, because with no AI step there is nothing to sort them by and
+`Upscaled framed` / `Non-Upscaled` would both be misleading. Nothing is written
+to the error sheet either — not upscaling is no longer a failure.
 
 ### The canvas
 
@@ -240,7 +306,7 @@ need several doublings, so up to `ESRGAN_MAX_PASSES` (3) are allowed, covering
 anything from about 12% up, with the fit-to-canvas step finishing the rest. Only if that also fails does the framed original ship with
 `Upscaling failed` in the error sheet.
 
-### Output folders
+### Output folders when enabled
 
 Custom posters carry the print size from their SKU, matching normal automation:
 
@@ -251,11 +317,22 @@ Non-Upscaled Custom posters/PP/3 copy/CUSTOM_2.jpg
 
 `Non-Upscaled` means the AI step failed — the poster is still delivered, framed
 at full canvas size, and a row reading `Upscaling failed` goes to
-`not_found.csv`. A poster that simply did not need AI (≥100%) is *not* an error
-and lands in `Upscaled framed Custom Posters`.
+`not_found.csv`. A poster that simply did not need AI is *not* an error and
+lands in `Upscaled framed Custom Posters`.
 
 The poster is never lost: a failed Gemini call, a failed local inference, a
 missing API key or an unreadable download all still produce a framed file.
+
+### Known problem, unresolved
+
+Real-ESRGAN on Railway's shared CPU takes **over two hours for 100 posters**,
+and Gemini at $0.24/image costs **$24 per 100-poster run**. Neither is
+workable, which is why the feature is parked.
+
+The likely fix is a dedicated upscaler on serverless GPU (Replicate runs the
+same Real-ESRGAN at roughly $0.0025/image and ~12 s, parallelisable to minutes
+for a full batch) rather than either CPU inference or a general-purpose
+generative model. Not implemented.
 
 ## Failsafe: the ZIP survives a failed run
 
@@ -311,7 +388,7 @@ backend/requirements-offline.txt reduced dependency set
 frontend/offline.html            single-file UI, no build step
 ```
 
-The online `main.py`, `api.py` and the React app are untouched and still work.
+`main.py`, `api.py` and the React app are untouched by any of this.
 
 ### Running it
 
@@ -329,14 +406,57 @@ Then open <http://127.0.0.1:8000>. The server binds to loopback only — these
 endpoints read and write the local filesystem, so it is deliberately not
 reachable from the network. Set `PORT` to use a different port.
 
-Fill in the two fields (both are validated as you type, so a typo shows up
-before you start a run rather than 30 seconds into one):
+Only `TOKEN` and `MERCHANT` are required in `.env`. `GEMINI_API_KEY` is
+optional; without it a poster that would have gone to Gemini takes the local
+route instead, and nothing fails.
 
-- **Artwork Folder** — absolute path to the folder holding all artwork.
-  Subfolders are searched, so the existing category/product structure works as-is.
-- **Destination Folder** — where the run folder gets created.
+### Picking folders
 
-Both are remembered in `~/.operation_automation_offline_config.json`.
+Both path fields have a **Browse…** button that opens the operating system's
+own folder chooser — `FolderBrowserDialog` on Windows, `choose folder` on
+macOS, `zenity` on Linux. This shells out to the platform dialog rather than
+bundling a Tk one, because the server answers from a worker thread and Tk is
+unreliable off the main thread on Windows.
+
+Typing or pasting a path still works, and both fields are validated as you
+type, so a typo surfaces before a run rather than 30 seconds into one.
+
+**The output folder defaults to your Downloads folder** until you choose
+somewhere else. Both paths are remembered in
+`~/.operation_automation_offline_config.json`.
+
+### Windows package
+
+For a machine without a development setup, the offline build ships as a
+self-contained folder:
+
+```
+OperationAutomation-Offline/
+├── install.bat        creates the venv, installs dependencies
+├── run.bat            starts the server and opens the browser
+├── build-exe.bat      optional: PyInstaller single .exe
+├── README.txt         plain-text instructions
+├── env.example        copied to .env by the installer
+├── backend/
+└── frontend/
+```
+
+Python 3.12+ must be installed first with **"Add python.exe to PATH"** ticked —
+`install.bat` detects when it isn't and explains the fix.
+
+A Windows `.exe` has to be built **on Windows**; PyInstaller does not
+cross-compile, which is why `build-exe.bat` runs there rather than being
+shipped pre-built.
+
+### Custom posters
+
+The offline build runs the **same** custom-poster pipeline as the online one —
+both import `custom_upscale.py`, so there is one implementation and no chance
+of the two drifting. Canvas, orientation and folder layout are identical; see
+*Custom poster upscaling* above, including its parked status.
+
+`UPSCALING_ENABLED` is read from the environment in both places, so the two
+builds can be switched independently.
 
 ### Output
 
@@ -360,36 +480,12 @@ overwriting the first. The run is assembled in a hidden `.…partial` folder and
 renamed into place only once it finishes, so a run that fails halfway never
 leaves behind a folder that looks complete.
 
-### Two Drive source folders (online)
+## Shared behaviour
 
-Artwork is split across more than one Drive folder, so the online build takes
-two. **Artwork Folder 1** is required; **Artwork Folder 2** is optional — leave
-it empty and the run behaves exactly as it did with one folder.
+These apply to both builds — the logic lives in `sku_rules.py` and
+`sticker_processor.py`, which both pipelines import.
 
-Both are walked recursively, subfolders included, and merged into a single
-lookup. **If the same SKU exists in both, Folder 1 wins.** The order is the
-rule, so the same run always picks the same file — with an unordered merge the
-winner would come down to whichever folder the Drive API happened to paginate
-first, which is not something an operator can reason about or rely on.
-
-Either field accepts a bare ID or a full `drive.google.com/drive/folders/…`
-URL; the ID is extracted automatically.
-
-The log reports each folder separately, so it's obvious when one of them is
-returning nothing:
-
-```
-Indexing 2 artwork source folders on Google Drive…
-  Folder 1: 4812 lookup key(s) from 1a2B3c…
-  Folder 2: 1190 lookup key(s) from 9zY8x7…
-Indexed 5794 lookup key(s) across 2 folders.
-```
-
-A folder that can't be read fails the run immediately, before anything is
-downloaded, naming which of the two it was — the usual cause is a wrong ID or a
-folder that was never shared with the service account.
-
-### SKU matching (both pipelines)
+### SKU matching
 
 SKU routing and artwork matching live in **`backend/sku_rules.py`** and are
 imported by both `main.py` and `offline_main.py`, so the two can't drift apart.
@@ -419,7 +515,7 @@ including ones with no printable marker at all:
 | `SKU has no A3/A4/A5/PP/STIC marker` | Not routable — usually gift wrap or shipping protection, but worth a glance |
 | `custom artwork download failed: …` | Customer-supplied artwork URL failed |
 
-### Duplicate designs (both pipelines)
+### Duplicate designs
 
 When the same design is ordered by more than one customer at the same quantity,
 both land in the same `N copy` folder. Both used to write to the same path, so the

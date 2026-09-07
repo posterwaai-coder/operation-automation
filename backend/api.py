@@ -11,25 +11,58 @@ CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".operation_automation_confi
 
 app = Flask(__name__)
 
-CORS(app, origins=[
+# Browser origins allowed to call this API.
+#
+# Read from the environment so a redeployed or renamed frontend only needs a
+# Railway variable changed, not a code push — the URL is a deployment detail,
+# and hard-coding it meant every move required a release. ALLOWED_ORIGINS is a
+# comma-separated list; the defaults keep local development working.
+_DEFAULT_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
     "https://operation-automation.vercel.app",
-])
+]
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+] or _DEFAULT_ORIGINS
+
+
+def _origin_allowed(origin: str) -> bool:
+    """
+    Exact match, or any Vercel preview URL belonging to an allowed project.
+
+    Vercel gives each deployment its own hostname
+    (project-abc123-team.vercel.app), so pinning only the production URL means
+    every preview build is blocked and appears broken for no visible reason.
+    """
+    if not origin:
+        return False
+    if origin in ALLOWED_ORIGINS:
+        return True
+    for allowed in ALLOWED_ORIGINS:
+        if allowed.endswith(".vercel.app"):
+            project = allowed[len("https://"):-len(".vercel.app")]
+            if origin.startswith(f"https://{project}-") and origin.endswith(".vercel.app"):
+                return True
+    return False
+
+
+CORS(app, origins=ALLOWED_ORIGINS)
 
 @app.after_request
 def add_cors_headers(response):
-    allowed_origins = [
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "https://operation-automation.vercel.app",
-    ]
     origin = request.headers.get("Origin")
-    if origin in allowed_origins:
+    if _origin_allowed(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
+
+@app.get("/api/health")
+def health():
+    """Cheap check that the API is reachable and which origins it accepts."""
+    return jsonify({"ok": True, "allowed_origins": ALLOWED_ORIGINS})
+
 
 @app.route("/api/<path:path>", methods=["OPTIONS"])
 def handle_options(path):

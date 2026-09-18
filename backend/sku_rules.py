@@ -14,6 +14,7 @@ for Drive. Nothing here cares which.
 """
 
 import os
+from decimal import Decimal, InvalidOperation
 
 # Extensions tried when a SKU has no extension of its own, in priority order.
 ARTWORK_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".pdf"]
@@ -28,6 +29,51 @@ SIZE_SUFFIXES = ("A3", "A4", "A5", "PP")
 
 # Files that are never artwork and would only pollute the index.
 IGNORED_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
+
+
+def is_creator_order(order) -> bool:
+    """Return True when Shopify reports an order total of exactly zero.
+
+    Shopify exposes the post-adjustment total as ``current_total_price`` on
+    newer orders and ``total_price`` on older payloads. A missing or malformed
+    total is treated as a normal order so an API variation cannot silently
+    remove paid work from a consignment.
+    """
+    for field in ("current_total_price", "total_price"):
+        value = getattr(order, field, None)
+        if value is None or value == "":
+            continue
+        try:
+            return Decimal(str(value).replace(",", "").strip()) == 0
+        except (InvalidOperation, ValueError):
+            continue
+    return False
+
+
+def collect_unfulfilled_skus(orders, include_creator_orders: bool = True):
+    """Collect printable line items and report excluded zero-value orders."""
+    collected = []
+    skipped_orders = 0
+    skipped_skus = 0
+
+    for order in orders:
+        if getattr(order, "fulfillment_status", None) is not None:
+            continue
+        line_items = getattr(order, "line_items", None) or []
+        if not include_creator_orders and is_creator_order(order):
+            skipped_orders += 1
+            skipped_skus += sum(1 for item in line_items if getattr(item, "sku", None))
+            continue
+        for line_item in line_items:
+            if getattr(line_item, "sku", None):
+                collected.append((
+                    order.id,
+                    line_item.sku,
+                    line_item.quantity,
+                    getattr(line_item, "properties", None),
+                ))
+
+    return collected, skipped_orders, skipped_skus
 
 
 def normalize_sku(sku: str) -> str:

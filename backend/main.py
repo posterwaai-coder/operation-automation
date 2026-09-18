@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from sticker_processor import StickerProcessor
 import custom_upscale
 from sku_rules import (
+    collect_unfulfilled_skus,
     index_file,
     merge_indexes,
     resolve_with_size_fallback,
@@ -60,19 +61,36 @@ _AUTH_HELP = (
 )
 
 
+# Environment variables that may carry the service-account key as inline JSON,
+# in priority order. GOOGLE_CREDENTIALS_JSON is accepted because that is the
+# name the Railway deployment has always used: only the first name was read, so
+# a fully configured key sat there being ignored while every run quietly fell
+# through to OAuth — and then failed with invalid_grant once that token expired.
+# Reading both is cheaper than moving a private key between variables.
+SERVICE_ACCOUNT_ENV_VARS = ("GOOGLE_SERVICE_ACCOUNT_JSON", "GOOGLE_CREDENTIALS_JSON")
+
+
 def _service_account_credentials():
     """
-    Return service-account credentials from GOOGLE_SERVICE_ACCOUNT_JSON (inline
-    JSON, ideal for deployment secrets) or a credentials.json file at the repo
-    root — or None if neither is present.
+    Return service-account credentials from GOOGLE_SERVICE_ACCOUNT_JSON or
+    GOOGLE_CREDENTIALS_JSON (inline JSON, ideal for deployment secrets), or a
+    credentials.json file at the repo root — or None if none is present.
     """
-    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-    if sa_json:
+    for env_var in SERVICE_ACCOUNT_ENV_VARS:
+        sa_json = (os.getenv(env_var) or "").strip()
+        if not sa_json:
+            continue
+        # An unresolved "${{shared.FOO}}" reference is a deployment-config
+        # artifact, not a key — env.md carries one verbatim. Skip it so a copied
+        # .env still falls through to OAuth, but keep genuinely malformed JSON a
+        # hard error: silently ignoring a real key is what caused this bug.
+        if sa_json.startswith("${{") and sa_json.endswith("}}"):
+            continue
         try:
             info = json.loads(sa_json)
         except json.JSONDecodeError as exc:
             raise RuntimeError(
-                "GOOGLE_SERVICE_ACCOUNT_JSON is set but is not valid JSON."
+                f"{env_var} is set but is not valid JSON."
             ) from exc
         return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
 
@@ -365,7 +383,8 @@ def process_sticker_folders(input_dir: Path, output_dir: Path) -> None:
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 def run_script(source_folder_ids, recipient_email: str, cc_email: str,
-               log=print, on_zip_ready=None) -> str:
+               log=print, on_zip_ready=None,
+               include_creator_orders: bool = True) -> str:
     """
     Run the full fulfilment pipeline.
 
@@ -384,6 +403,9 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                        api.py uses it to arm the download button early, so the
                        artwork stays reachable even if a later step fails or
                        the run dies outright.
+    include_creator_orders : Include unfulfilled Shopify orders priced at ₹0
+                       (UGC/creator gifts). When false, the whole order is
+                       left out of this consignment.
 
     Returns
     -------
@@ -410,20 +432,17 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
         # ── Step 1: fetch unfulfilled orders ─────────────────────────────────
         log("Fetching unfulfilled orders from Shopify…")
         orders = script.get_data("Order")
-        unfulfilled_skus = []
         not_found = []
         custom_count = 0
         skipped = 0
-
-        for order in orders:
-            if order.fulfillment_status is None:
-                for line_item in order.line_items:
-                    if line_item.sku:
-                        unfulfilled_skus.append(
-                            (order.id, line_item.sku, line_item.quantity, line_item.properties)
-                        )
+        unfulfilled_skus, creator_orders_skipped, creator_skus_skipped = (
+            collect_unfulfilled_skus(orders, include_creator_orders)
+        )
 
         log(f"Found {len(unfulfilled_skus)} unfulfilled SKU(s).")
+        if creator_orders_skipped:
+            log(f"Skipped {creator_orders_skipped} creator order(s) at ₹0 "
+                f"({creator_skus_skipped} SKU(s)) for this consignment.")
 
         # ── Step 2: build Drive index (one API walk, no downloads yet) ───────
         folder_ids = ([source_folder_ids] if isinstance(source_folder_ids, str)

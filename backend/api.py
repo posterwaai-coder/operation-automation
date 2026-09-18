@@ -84,6 +84,20 @@ def save_config(data: dict):
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+
+def _as_bool(value, default=True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _settings_with_defaults() -> dict:
+    cfg = load_config()
+    cfg.setdefault("include_creator_orders", True)
+    return cfg
+
 # Shared run-state
 _run_state = {
     "running":  False,
@@ -103,16 +117,19 @@ def _append_log(msg: str):
 
 @app.get("/api/settings")
 def get_settings():
-    return jsonify(load_config())
+    return jsonify(_settings_with_defaults())
 
 
 @app.post("/api/settings")
 def post_settings():
     body = request.get_json(force=True)
     allowed = {"source_folder_id", "source_folder_id_2", "recipient_email",
-               "cc_email"}
+               "cc_email", "include_creator_orders"}
     cfg = load_config()
-    cfg.update({k: v for k, v in body.items() if k in allowed})
+    updates = {k: v for k, v in body.items() if k in allowed}
+    if "include_creator_orders" in updates:
+        updates["include_creator_orders"] = _as_bool(updates["include_creator_orders"], True)
+    cfg.update(updates)
     save_config(cfg)
     return jsonify({"ok": True})
 
@@ -144,6 +161,7 @@ def post_run():
     source_folder_id_2 = body.get("source_folder_id_2", "").strip()
     recipient_email    = body.get("recipient_email",    "").strip()
     cc_email           = body.get("cc_email",           "").strip()
+    include_creator_orders = _as_bool(body.get("include_creator_orders"), True)
 
     missing = [f for f, v in [
         ("source_folder_id", source_folder_id),
@@ -166,6 +184,7 @@ def post_run():
         "source_folder_id_2": source_folder_id_2,
         "recipient_email":    recipient_email,
         "cc_email":           cc_email,
+        "include_creator_orders": include_creator_orders,
     })
 
     _run_state.update({
@@ -193,6 +212,7 @@ def post_run():
                 cc_email=cc_email,
                 log=_append_log,
                 on_zip_ready=_record_zip,
+                include_creator_orders=include_creator_orders,
             )
             if zip_path:
                 _record_zip(zip_path)
@@ -243,5 +263,9 @@ def post_reset():
 
 # ── entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT"))
+    # Railway injects PORT; locally there is none, and int(None) used to raise a
+    # TypeError before the server ever bound — so `python api.py` failed with a
+    # traceback and the UI could only report "cannot reach backend". 8000 is the
+    # port the Vite dev proxy already forwards /api to.
+    port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=False)

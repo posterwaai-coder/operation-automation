@@ -14,6 +14,7 @@ function useSettings(setForm) {
           source_folder_id_2: cfg.source_folder_id_2 ?? "",
           recipient_email:    cfg.recipient_email    ?? "",
           cc_email:           cfg.cc_email           ?? "",
+          include_creator_orders: cfg.include_creator_orders ?? true,
         })
       )
       .catch(() => {});
@@ -115,6 +116,32 @@ function InputField({ id, label, type = "text", value, onChange, disabled, place
   );
 }
 
+function Toggle({ id, label, note, checked, onChange, disabled }) {
+  return (
+    <div style={s.toggleRow}>
+      <div style={s.toggleCopy}>
+        <label style={s.toggleLabel} htmlFor={id}>{label}</label>
+        <span style={s.note}>{note}</span>
+      </div>
+      <button
+        id={id}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={disabled}
+        onClick={() => onChange(id, !checked)}
+        style={{
+          ...s.toggle,
+          ...(checked ? s.toggleOn : {}),
+          ...(disabled ? s.inputDisabled : {}),
+        }}
+      >
+        <span style={{ ...s.toggleKnob, ...(checked ? s.toggleKnobOn : {}) }} />
+      </button>
+    </div>
+  );
+}
+
 function LogPanel({ lines }) {
   const ref = useRef(null);
   useEffect(() => { if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; }, [lines]);
@@ -152,6 +179,7 @@ export default function App() {
     source_folder_id_2: "",
     recipient_email:    "",
     cc_email:           "",
+    include_creator_orders: true,
   });
 
   const setFormCb = useCallback((next) => setForm(next), []);
@@ -249,6 +277,21 @@ export default function App() {
             />
           </div>
 
+          <div style={s.divider} />
+
+          {/* Run options */}
+          <div style={s.sectionLabel}><span>Consignment</span><span style={s.sectionLine} /></div>
+          <div style={s.optionsGroup}>
+            <Toggle
+              id="include_creator_orders"
+              label="Include ₹0 creator orders"
+              note="When on, zero-value creator (UGC) orders are included in this consignment."
+              checked={form.include_creator_orders}
+              onChange={handleChange}
+              disabled={isRunning}
+            />
+          </div>
+
           {/* Save indicator */}
           <div style={s.saveRow}>
             <span style={{ ...s.saveInd, opacity: saved ? 1 : 0 }}>✓ Settings saved</span>
@@ -323,6 +366,14 @@ const s = {
   inputDisabled:{ opacity: 0.4, cursor: "not-allowed" },
   note:         { fontSize: 10, color: "#4a4f60", marginTop: 4, lineHeight: 1.6 },
   divider:      { height: 1, background: "#232530", margin: "24px 0" },
+  optionsGroup: { display: "flex", flexDirection: "column", gap: 18, marginBottom: 28 },
+  toggleRow:    { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 20, padding: "14px", background: "#0b0c0f", border: "1px solid #232530", borderRadius: 8 },
+  toggleCopy:   { display: "flex", flexDirection: "column", gap: 3, minWidth: 0 },
+  toggleLabel:  { fontSize: 12, letterSpacing: ".04em", color: "#e4e6ef", cursor: "pointer" },
+  toggle:       { width: 46, height: 26, flex: "0 0 46px", padding: 3, border: "1px solid #343744", borderRadius: 999, background: "#232530", cursor: "pointer", transition: "background 180ms ease, border-color 180ms ease" },
+  toggleOn:     { background: "#e8ff5a", borderColor: "#e8ff5a" },
+  toggleKnob:   { display: "block", width: 18, height: 18, borderRadius: "50%", background: "#7a7f94", transform: "translateX(0)", transition: "transform 180ms ease, background 180ms ease" },
+  toggleKnobOn: { background: "#0b0c0f", transform: "translateX(20px)" },
   saveRow:      { display: "flex", justifyContent: "flex-end", marginTop: -8, marginBottom: 12 },
   saveInd:      { fontSize: 10, color: "#4a4f60", letterSpacing: ".08em", transition: "opacity .4s" },
   runBtn:       { width: "100%", padding: "14px 24px", background: "#e8ff5a", color: "#0b0c0f", border: "none", borderRadius: 6, fontFamily: "'Syne',sans-serif", fontSize: 15, fontWeight: 700, letterSpacing: ".04em", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 },

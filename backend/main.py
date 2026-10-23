@@ -607,7 +607,17 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
     if zip_filepath:
         try:
             log("Uploading ZIP to Google Drive…")
-            output_folder_id = "1c28UVUhoxkpAjZyd9vsXoR5pXjaDlZZn"
+            # "Posterwa Orders", owned by posterwaai@gmail.com — the same
+            # folder the current system uploads to.
+            #
+            # The previous folder was shared with the service account rather
+            # than with a person, so once uploads moved to user OAuth it was
+            # not merely unwritable but invisible: the API returns 404, which
+            # reads like a wrong id rather than a permissions problem. It is
+            # overridable so a folder change never needs a code release again.
+            output_folder_id = os.getenv(
+                "DRIVE_OUTPUT_FOLDER_ID", "1T2DX_2C3j5RCBL-EWgQv5Bq4GUTo4_01"
+            )
             shared_link = upload_to_drive(zip_filepath, output_folder_id)
         except Exception as exc:        # noqa: BLE001
             warnings.append(f"Drive upload failed: {exc}")

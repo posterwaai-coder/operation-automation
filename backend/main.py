@@ -384,8 +384,7 @@ def process_sticker_folders(input_dir: Path, output_dir: Path) -> None:
 
 def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                log=print, on_zip_ready=None,
-               include_creator_orders: bool = True,
-               on_items=None) -> str:
+               include_creator_orders: bool = True) -> str:
     """
     Run the full fulfilment pipeline.
 
@@ -407,10 +406,6 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
     include_creator_orders : Include unfulfilled Shopify orders priced at ₹0
                        (UGC/creator gifts). When false, the whole order is
                        left out of this consignment.
-    on_items         : Optional callback handed one record per line item, with
-                       what became of it. Feeds the tick-off checklist, which
-                       needs to know every item that was ordered — not only
-                       the ones that failed, which is all not_found.csv keeps.
 
     Returns
     -------
@@ -438,24 +433,8 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
         log("Fetching unfulfilled orders from Shopify…")
         orders = script.get_data("Order")
         not_found = []
-        checklist_items = []
         custom_count = 0
         skipped = 0
-
-        # Shopify's own order number (#3891) rather than its internal id —
-        # that is what is written on the packing slip someone is holding.
-        order_names = {order.id: getattr(order, "name", None) for order in orders}
-
-        def record(order_id, sku, quantity, outcome, reason=None):
-            checklist_items.append({
-                "order_id": str(order_id),
-                "order_name": order_names.get(order_id) or f"Order {order_id}",
-                "sku": sku,
-                "quantity": quantity,
-                "outcome": outcome,
-                "reason": reason,
-                "seq": len(checklist_items),
-            })
         unfulfilled_skus, creator_orders_skipped, creator_skus_skipped = (
             collect_unfulfilled_skus(orders, include_creator_orders)
         )
@@ -490,8 +469,6 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                 skipped += 1
                 not_found.append((order_id, sku, quantity,
                                   "SKU has no A3/A4/A5/PP/STIC marker"))
-                record(order_id, sku, quantity, "skipped",
-                       "no A3/A4/A5/PP/STIC marker")
                 continue
 
             filename, folder_name, is_sticker = routed
@@ -515,7 +492,6 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                 if os.path.basename(dest_file) != f"{filename}{ext}":
                     log(f"    saved as {os.path.basename(dest_file)} "
                         f"(another order already needed this SKU at qty {quantity})")
-                record(order_id, sku, quantity, "printed")
 
             elif properties and len(properties) > 0:
                 # Customer-supplied custom artwork, hosted on a URL by Shopify.
@@ -523,8 +499,6 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                 if not url or not str(url).lower().startswith(("http://", "https://")):
                     not_found.append((order_id, sku, quantity,
                                       "custom artwork property is not a URL"))
-                    record(order_id, sku, quantity, "failed",
-                           "custom artwork property is not a URL")
                     log(f"  ⚠ Custom artwork property is not a URL: {sku}")
                     continue
 
@@ -539,8 +513,6 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                         os.remove(dest_file)
                     not_found.append((order_id, sku, quantity,
                                       f"custom artwork download failed: {exc}"))
-                    record(order_id, sku, quantity, "failed",
-                           f"download failed: {exc}")
                     log(f"  ⚠ Custom artwork download failed for {sku}: {exc}")
                 else:
                     # Custom posters get upscaled and re-filed into their own
@@ -564,16 +536,10 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
                     if upscale_status == custom_upscale.STATUS_FAILED:
                         not_found.append((order_id, sku, quantity,
                                           custom_upscale.FAILURE_REASON))
-                        record(order_id, sku, quantity, "failed",
-                               custom_upscale.FAILURE_REASON)
-                    else:
-                        record(order_id, sku, quantity, "printed")
 
             else:
                 not_found.append((order_id, sku, quantity,
                                   "no matching file in Drive source folder"))
-                record(order_id, sku, quantity, "missing",
-                       "no matching file in the Drive source folder")
                 log(f"  ⚠ Not found in Drive: {sku}")
 
         if skipped:
@@ -598,18 +564,8 @@ def run_script(source_folder_ids, recipient_email: str, cc_email: str,
         # ── Step 6: clean up empty folders ───────────────────────────────────
         remove_empty_folders(destination)
 
-        if on_items:
-            on_items(checklist_items)
-
     except Exception as exc:            # noqa: BLE001 — deliberately broad
         gather_error = exc
-        if on_items:
-            # A run that died halfway still gathered real artwork; the
-            # checklist for it is worth more than nothing.
-            try:
-                on_items(checklist_items)
-            except Exception:           # noqa: BLE001
-                pass
         log(f"❌ Error while gathering artwork: {exc}")
         log("Packaging whatever was collected before the failure…")
 

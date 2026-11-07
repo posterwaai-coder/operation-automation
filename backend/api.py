@@ -7,10 +7,6 @@ from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import json, os, threading, shutil
 
-# Imported at the top, unlike main: checklist only needs sku_rules, so it
-# cannot fail on a missing TOKEN the way importing main would.
-from checklist import build as build_checklist
-
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".operation_automation_config.json")
 
 app = Flask(__name__)
@@ -110,10 +106,6 @@ _run_state = {
     "done":     False,
     "zip_path": None,   # set by worker when ZIP is ready
     "tmp_dir":  None,   # tracked so we can clean up after download
-    # Every line item of the last run, for the tick-off checklist. Held in
-    # memory only: this service has no database, and the browser keeps its
-    # own copy so a restart mid-shift does not lose the list.
-    "items":    [],
 }
 
 def _append_log(msg: str):
@@ -200,10 +192,6 @@ def post_run():
         "done": False, "zip_path": None, "tmp_dir": None,
     })
 
-    def _record_items(items):
-        """Keep the last run's line items so the checklist can be built."""
-        _run_state["items"] = items
-
     def _record_zip(path: str):
         """
         Arm the download as soon as the archive exists.
@@ -225,7 +213,6 @@ def post_run():
                 log=_append_log,
                 on_zip_ready=_record_zip,
                 include_creator_orders=include_creator_orders,
-                on_items=_record_items,
             )
             if zip_path:
                 _record_zip(zip_path)
@@ -241,19 +228,6 @@ def post_run():
 
     threading.Thread(target=worker, daemon=True).start()
     return jsonify({"ok": True, "message": "Job started"})
-
-
-@app.get("/api/checklist")
-def get_checklist():
-    """
-    The tick-off checklist for the last run.
-
-    Verdicts are NOT stored here. This service has no database and its disk
-    is wiped on every deploy, so a verdict kept server-side would be lost
-    exactly when it mattered. The browser owns them; this endpoint only
-    supplies the items to tick.
-    """
-    return jsonify(build_checklist(_run_state.get("items") or []))
 
 
 @app.get("/api/download")
@@ -280,9 +254,6 @@ def post_reset():
     tmp_dir = _run_state.get("tmp_dir")
     if tmp_dir and os.path.exists(tmp_dir):
         shutil.rmtree(tmp_dir, ignore_errors=True)
-    # Deliberately leaves "items" alone: somebody may be halfway through
-    # ticking the pile when the next run is prepared, and resetting the log
-    # should not take their checklist away.
     _run_state.update({
         "running": False, "log": [], "error": None,
         "done": False, "zip_path": None, "tmp_dir": None,

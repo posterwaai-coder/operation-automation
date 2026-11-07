@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
+import Checklist from "./Checklist";
+
 const API = (import.meta.env.VITE_API_URL ?? "") + "/api";
 
 // ── Hooks ──────────────────────────────────────────────────────────────────────
@@ -182,6 +184,8 @@ export default function App() {
     include_creator_orders: true,
   });
 
+  const [view, setView] = useState("run");
+
   const setFormCb = useCallback((next) => setForm(next), []);
   useSettings(setFormCb);
 
@@ -210,15 +214,30 @@ export default function App() {
 
   return (
     <div style={s.page}>
-      <div style={s.shell}>
+      <div style={{ ...s.shell, maxWidth: view === "checklist" ? 1100 : 680 }}>
 
         {/* Header */}
         <header style={s.header}>
           <div style={s.tag}><span style={s.tagLine} /> Automation System</div>
           <h1 style={s.h1}>Operation <span style={s.accent}>Automation</span></h1>
           <p style={s.subtitle}>Connect your Google Drive source folder, set notification emails, then run.</p>
+
+          <div style={s.tabs}>
+            {[["run", "Run"], ["checklist", "Checklist"]].map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setView(key)}
+                style={{ ...s.tab, ...(view === key ? s.tabOn : {}) }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </header>
 
+        {view === "checklist" && <Checklist />}
+
+        {view === "run" && (
         <div style={s.card}>
 
           {/* Source folders */}
@@ -329,6 +348,7 @@ export default function App() {
           )}
 
         </div>
+        )}
 
         <footer style={s.footer}>OPERATION AUTOMATION · INTERNAL TOOL</footer>
       </div>
@@ -355,6 +375,9 @@ const s = {
   h1:       { fontFamily: "'Syne',sans-serif", fontSize: "clamp(28px,5vw,42px)", fontWeight: 800, lineHeight: 1.05, letterSpacing: "-.02em", color: "#fff" },
   accent:   { color: "#e8ff5a" },
   subtitle: { marginTop: 8, fontSize: 12, color: "#7a7f94", letterSpacing: ".04em" },
+  tabs:     { display: "flex", gap: 6, marginTop: 22 },
+  tab:      { background: "transparent", border: "1px solid #232530", color: "#7a7f94", borderRadius: 999, padding: "5px 14px", fontSize: 11, cursor: "pointer", fontFamily: "'DM Mono',monospace", letterSpacing: ".04em" },
+  tabOn:    { background: "#e8ff5a", borderColor: "#e8ff5a", color: "#0b0c0f" },
   card:     { background: "#13151a", border: "1px solid #232530", borderRadius: 12, padding: 32 },
   sectionLabel: { fontSize: 10, letterSpacing: ".14em", textTransform: "uppercase", color: "#4a4f60", marginBottom: 20, display: "flex", alignItems: "center", gap: 10 },
   sectionLine:  { flex: 1, height: 1, background: "#232530" },
